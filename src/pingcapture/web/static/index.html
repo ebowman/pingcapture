@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pingcapture — DSL reliability</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1f242c;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --good: #2ea043;
+    --warn: #d29922;
+    --bad: #f85149;
+    --accent: #58a6ff;
+    --grid: #30363d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    line-height: 1.45;
+  }
+  header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--grid);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.02em; }
+  .status-pill {
+    padding: 0.4rem 0.9rem;
+    border-radius: 999px;
+    font-weight: 700; letter-spacing: 0.04em; font-size: 0.9rem;
+  }
+  .status-UP { background: color-mix(in srgb, var(--good) 22%, transparent); color: var(--good); }
+  .status-DEGRADED { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+  .status-DOWN { background: color-mix(in srgb, var(--bad) 25%, transparent); color: var(--bad); }
+  .status-LOADING { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
+  main { padding: 1.5rem; max-width: 1280px; margin: 0 auto; }
+  .grid { display: grid; gap: 1rem; }
+  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 900px) {
+    .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--grid);
+    border-radius: 12px; padding: 1rem 1.1rem;
+  }
+  .card h2 {
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+    margin: 0 0 0.6rem; color: var(--muted); font-weight: 600;
+  }
+  .stat { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .unit { color: var(--muted); font-size: 0.85rem; font-weight: 500; margin-left: 0.25rem; }
+  .row { display: flex; gap: 1rem; align-items: baseline; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td {
+    padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--grid);
+    text-align: left;
+  }
+  th { color: var(--muted); font-weight: 500; font-size: 0.8rem;
+       text-transform: uppercase; letter-spacing: 0.05em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--good); }
+  .fail { color: var(--bad); }
+  .muted { color: var(--muted); }
+  .controls { display: flex; gap: 0.5rem; align-items: center; }
+  .controls button {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--grid); border-radius: 8px;
+    padding: 0.35rem 0.8rem; font-size: 0.85rem; cursor: pointer;
+    font-family: inherit;
+  }
+  .controls button.active { background: var(--accent); border-color: var(--accent); color: #061018; font-weight: 600; }
+  .controls button:hover:not(.active) { background: #232a35; }
+  .chart-wrap { position: relative; height: 280px; }
+  footer { padding: 1.5rem; text-align: center; color: var(--muted); font-size: 0.8rem; }
+  .pulse { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>pingcapture &middot; DSL reliability</h1>
+  <div id="status" class="status-pill status-LOADING pulse" data-status="LOADING">CHECKING…</div>
+</header>
+
+<main>
+  <section class="grid grid-3">
+    <div class="card">
+      <h2>Uptime (last <span id="window-label">24h</span>)</h2>
+      <div class="row">
+        <div class="stat" id="uptime">—<span class="unit">%</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Outages</h2>
+      <div class="row">
+        <div class="stat" id="outage-count">—</div>
+        <div class="muted">total <span id="outage-total">—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Latency variance (buffer-bloat)</h2>
+      <div class="row">
+        <div class="stat" id="bloat">—<span class="unit">ms σ</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:1rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+      <h2 style="margin:0;">Latency over time</h2>
+      <div class="controls">
+        <button data-window="1" >1h</button>
+        <button data-window="6" >6h</button>
+        <button data-window="24" class="active">24h</button>
+        <button data-window="168">7d</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="latency-chart"></canvas></div>
+  </section>
+
+  <section class="grid grid-2" style="margin-top:1rem;">
+    <div class="card">
+      <h2>Per-target stats</h2>
+      <table id="latency-table">
+        <thead><tr>
+          <th>Target</th><th class="num">Samples</th><th class="num">Success %</th>
+          <th class="num">p50</th><th class="num">p95</th><th class="num">p99</th><th class="num">max</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Outages</h2>
+      <table id="outage-table">
+        <thead><tr>
+          <th>Start (UTC)</th><th class="num">Duration</th><th class="num">Probes</th><th>Targets</th>
+        </tr></thead>
+        <tbody><tr><td colspan="4" class="muted">No outages in window.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:1rem;">
+    <h2>Recent events (last 50)</h2>
+    <table id="events-table">
+      <thead><tr>
+        <th>Time (UTC)</th><th>Kind</th><th>Target</th><th class="num">Latency</th><th>Result</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card" style="margin-top:1rem;">
+    <h2>Path changes (mtr)</h2>
+    <table id="paths-table">
+      <thead><tr>
+        <th>Detected at (UTC)</th><th>Target</th><th class="num">Hop</th><th>Change</th>
+      </tr></thead>
+      <tbody><tr><td colspan="4" class="muted">No path changes in window.</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<footer>auto-refresh every 10s &middot; <span id="version"></span></footer>
+
+<script>
+const fmtSec = (s) => {
+  if (s == null) return "—";
+  if (s < 60) return s.toFixed(1) + " s";
+  if (s < 3600) return (s / 60).toFixed(1) + " min";
+  if (s < 86400) return (s / 3600).toFixed(1) + " h";
+  return (s / 86400).toFixed(1) + " d";
+};
+const fmtMs = (v) => v == null ? "—" : v.toFixed(1);
+const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, "") : "—";
+
+let currentWindow = 24;
+let chart = null;
+
+const palette = [
+  "#58a6ff", "#3fb950", "#d29922", "#f85149",
+  "#a371f7", "#ff7b72", "#79c0ff", "#56d4dd",
+];
+const colorFor = (key, idx) => palette[idx % palette.length];
+
+async function refresh() {
+  try {
+    const [status, summary, ts, recent] = await Promise.all([
+      fetch("/api/status").then(r => r.json()),
+      fetch(`/api/summary?hours=${currentWindow}`).then(r => r.json()),
+      fetch(`/api/timeseries?hours=${currentWindow}`).then(r => r.json()),
+      fetch("/api/recent?limit=50").then(r => r.json()),
+    ]);
+    renderStatus(status);
+    renderSummary(summary);
+    renderChart(ts);
+    renderRecent(recent);
+    renderOutages(summary);
+    renderPaths(summary);
+    document.getElementById("version").textContent = "pingcapture v" + status.version;
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function renderStatus(s) {
+  const el = document.getElementById("status");
+  el.dataset.status = s.status;
+  el.className = "status-pill status-" + s.status;
+  el.textContent = s.status;
+}
+
+function renderSummary(s) {
+  document.getElementById("window-label").textContent =
+    currentWindow >= 24 ? (currentWindow / 24) + "d" : currentWindow + "h";
+  document.getElementById("uptime").innerHTML = s.uptime_pct.toFixed(3) +
+    '<span class="unit">%</span>';
+  document.getElementById("outage-count").textContent = s.outages.length;
+  const total = s.outages.reduce((a, o) => a + o.duration_s, 0);
+  document.getElementById("outage-total").textContent = fmtSec(total);
+  const bloat = s.buffer_bloat_ms;
+  document.getElementById("bloat").innerHTML = (bloat == null ? "—" : bloat.toFixed(1)) +
+    '<span class="unit">ms σ</span>';
+
+  const tbody = document.querySelector("#latency-table tbody");
+  tbody.innerHTML = s.latency.map(row => `
+    <tr>
+      <td>${row.label} <span class="muted">${row.target}</span></td>
+      <td class="num">${row.samples}</td>
+      <td class="num">${row.success_pct.toFixed(2)}</td>
+      <td class="num">${fmtMs(row.p50_ms)}</td>
+      <td class="num">${fmtMs(row.p95_ms)}</td>
+      <td class="num">${fmtMs(row.p99_ms)}</td>
+      <td class="num">${fmtMs(row.max_ms)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderOutages(s) {
+  const tbody = document.querySelector("#outage-table tbody");
+  if (s.outages.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No outages in window.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = s.outages.slice().reverse().map(o => `
+    <tr>
+      <td>${fmtTs(o.start)}</td>
+      <td class="num">${fmtSec(o.duration_s)}</td>
+      <td class="num">${o.failed_probes}</td>
+      <td class="muted">${o.affected_targets.join(", ")}</td>
+    </tr>
+  `).join("");
+}
+
+function renderPaths(s) {
+  const tbody = document.querySelector("#paths-table tbody");
+  if (s.path_changes.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No path changes in window.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = s.path_changes.slice().reverse().map(c => `
+    <tr>
+      <td>${fmtTs(c.at)}</td>
+      <td>${c.target}</td>
+      <td class="num">${c.hop_idx}</td>
+      <td>${c.old_ip || "—"} → ${c.new_ip || "—"}</td>
+    </tr>
+  `).join("");
+}
+
+function renderRecent(r) {
+  const tbody = document.querySelector("#events-table tbody");
+  tbody.innerHTML = r.events.map(e => `
+    <tr>
+      <td>${fmtTs(e.ts)}</td>
+      <td>${e.kind}</td>
+      <td>${e.label} <span class="muted">${e.target}</span></td>
+      <td class="num">${fmtMs(e.latency_ms)}</td>
+      <td class="${e.success ? 'ok' : 'fail'}">${e.success ? 'ok' : (e.error || 'fail')}</td>
+    </tr>
+  `).join("");
+}
+
+function renderChart(ts) {
+  const byTarget = new Map();
+  for (const p of ts.points) {
+    if (!p.success || p.latency_ms == null) continue;
+    const k = `${p.label} (${p.kind})`;
+    if (!byTarget.has(k)) byTarget.set(k, []);
+    byTarget.get(k).push({ x: new Date(p.ts), y: p.latency_ms });
+  }
+  const datasets = [...byTarget.entries()].map(([label, data], i) => ({
+    label,
+    data,
+    parsing: false,
+    borderColor: colorFor(label, i),
+    backgroundColor: colorFor(label, i),
+    borderWidth: 1.4,
+    pointRadius: 0,
+    pointHoverRadius: 3,
+    tension: 0.2,
+  }));
+  const ctx = document.getElementById("latency-chart");
+  if (chart) {
+    chart.data.datasets = datasets;
+    chart.update("none");
+    return;
+  }
+  chart = new Chart(ctx, {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "nearest", intersect: false },
+      scales: {
+        x: { type: "time", grid: { color: "#222831" },
+             ticks: { color: "#8b949e" } },
+        y: { beginAtZero: true, grid: { color: "#222831" },
+             ticks: { color: "#8b949e", callback: v => v + " ms" } },
+      },
+      plugins: {
+        legend: { labels: { color: "#e6edf3", boxWidth: 12 } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(1)} ms` } },
+      },
+    },
+  });
+}
+
+document.querySelectorAll(".controls button[data-window]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".controls button[data-window]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentWindow = parseFloat(btn.dataset.window);
+    refresh();
+  });
+});
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

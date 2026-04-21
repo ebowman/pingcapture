@@ -1,0 +1,59 @@
+"""Web API smoke tests via httpx + FastAPI TestClient."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from fastapi.testclient import TestClient
+
+from pingcapture.config import Config
+from pingcapture.storage import Store
+from pingcapture.web.app import create_app
+
+from ..conftest import mk_ping
+
+
+def _seed(store: Store, now: datetime) -> None:
+    for i in range(20):
+        store.insert_ping(mk_ping(ts=now + timedelta(seconds=i * 5), success=(i % 7 != 0)))
+
+
+def test_status_endpoint(tmp_db, now) -> None:
+    s = Store(tmp_db)
+    _seed(s, now)
+    s.close()
+    cfg = Config.defaults()
+    cfg = type(cfg)(
+        **{**cfg.__dict__, "db_path": tmp_db}
+    )
+    client = TestClient(create_app(cfg))
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] in {"UP", "DEGRADED", "DOWN"}
+    assert "version" in body
+
+
+def test_summary_endpoint(tmp_db, now) -> None:
+    s = Store(tmp_db)
+    _seed(s, now)
+    s.close()
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/api/summary?hours=24")
+    assert r.status_code == 200
+    body = r.json()
+    assert "uptime_pct" in body
+    assert "outages" in body
+    assert "latency" in body
+
+
+def test_index_serves_html(tmp_db) -> None:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "pingcapture" in r.text
+    assert "<html" in r.text
