@@ -5,12 +5,10 @@ Feature: Bilingual report generation
 
   Scenario Outline: Report renders without missing translations
     Given a seeded database with normal traffic and one outage
-    When I render a report in <lang> as <fmt>
+    When I render a report in <lang>
     Then the report contains the localized title
 
     Examples:
-      | lang | fmt  |
-      | en   | html |
-      | en   | md   |
-      | de   | html |
-      | de   | md   |
+      | lang |
+      | en   |
+      | de   |

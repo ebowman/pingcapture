@@ -59,6 +59,46 @@ def test_index_serves_html(tmp_db) -> None:
     assert "<html" in r.text
 
 
+def test_report_page_en(tmp_db, now) -> None:
+    s = Store(tmp_db)
+    _seed(s, now)
+    s.close()
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/report?lang=en&since=24h")
+    assert r.status_code == 200
+    assert "Reporting period" in r.text
+    assert 'class="toolbar"' in r.text
+    assert "?lang=de&since=24h" in r.text
+    assert "@media print" in r.text
+
+
+def test_report_page_de(tmp_db) -> None:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/report?lang=de&since=7d")
+    assert r.status_code == 200
+    assert "Berichtszeitraum" in r.text
+
+
+def test_report_page_rejects_bad_lang(tmp_db) -> None:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/report?lang=fr")
+    assert r.status_code == 400
+
+
+def test_report_page_rejects_bad_since(tmp_db) -> None:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/report?since=bogus")
+    assert r.status_code == 400
+
+
 def test_buckets_endpoint(tmp_db, now) -> None:
     s = Store(tmp_db)
     _seed(s, now)

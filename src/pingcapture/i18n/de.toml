@@ -1,3 +1,8 @@
+toolbar_back = "Übersicht"
+toolbar_window = "Zeitraum"
+toolbar_language = "Sprache"
+toolbar_print_hint = "Drucken oder als PDF speichern (⌘P), um an den Anbieter zu senden"
+
 report_title = "Bericht zur Zuverlässigkeit der DSL-Verbindung"
 report_subtitle = "Erstellt mit pingcapture für {owner}"
 period = "Berichtszeitraum"

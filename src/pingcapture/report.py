@@ -5,7 +5,6 @@ from __future__ import annotations
 import getpass
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 
@@ -27,11 +26,21 @@ from .storage import Store
 
 
 @dataclass(frozen=True)
+class WindowOption:
+    spec: str
+    label: str
+    active: bool
+
+
+@dataclass(frozen=True)
 class ReportInputs:
     start: datetime
     end: datetime
     lang: str = "en"
     owner: str = ""
+    show_toolbar: bool = False
+    since_spec: str = ""
+    window_options: tuple[WindowOption, ...] = ()
 
 
 def _format_duration(t: Translator, seconds: float) -> str:
@@ -85,8 +94,10 @@ def render_report(
     inputs: ReportInputs,
     fmt: str = "html",
 ) -> str:
-    if fmt not in {"html", "md"}:
-        raise ValueError(f"unsupported format: {fmt}")
+    """Render the bilingual report. ``fmt`` is retained for the template
+    selector but only "html" is supported now that the report is web-served."""
+    if fmt != "html":
+        raise ValueError(f"unsupported format: {fmt} (only 'html' is supported)")
     t = Translator(inputs.lang)
     pings = store.pings_between(inputs.start, inputs.end)
     mtr_runs = store.mtr_runs_between(inputs.start, inputs.end)
@@ -117,6 +128,12 @@ def render_report(
         "icmp_target_count": len(cfg.icmp_targets),
         "tcp_interval": cfg.tcp_interval_s,
         "mtr_interval_min": int(cfg.mtr_interval_s // 60),
+        "show_toolbar": inputs.show_toolbar,
+        "since_spec": inputs.since_spec,
+        "window_options": [
+            {"spec": o.spec, "label": o.label, "active": o.active}
+            for o in inputs.window_options
+        ],
         "latency": latency_stats(pings),
         "path_changes": [_path_change_view(c) for c in mtr_path_changes(mtr_runs)],
         "grid_buckets": [
@@ -158,9 +175,4 @@ def parse_since(spec: str) -> timedelta:
     raise ValueError(f"unknown unit in since spec: {spec!r}")
 
 
-def write_report(out_path: Path, content: str) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(content, encoding="utf-8")
-
-
-__all__ = ["ReportInputs", "parse_since", "render_report", "write_report"]
+__all__ = ["ReportInputs", "WindowOption", "parse_since", "render_report"]

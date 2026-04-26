@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from pingcapture.config import Config
-from pingcapture.report import ReportInputs, parse_since, render_report
+from pingcapture.report import ReportInputs, WindowOption, parse_since, render_report
 from pingcapture.storage import MtrHop, MtrRun, Store
 
 from ..conftest import mk_ping
@@ -28,8 +28,7 @@ def test_parse_since_invalid() -> None:
 
 
 @pytest.mark.parametrize("lang", ["en", "de"])
-@pytest.mark.parametrize("fmt", ["html", "md"])
-def test_report_renders_without_missing_keys(store: Store, now: datetime, lang: str, fmt: str) -> None:
+def test_report_renders_without_missing_keys(store: Store, now: datetime, lang: str) -> None:
     # Some data: a few pings, an outage, an mtr run with a path change.
     for i in range(20):
         store.insert_ping(mk_ping(ts=now + timedelta(seconds=i * 5), success=(i not in (5, 6, 7))))
@@ -46,11 +45,9 @@ def test_report_renders_without_missing_keys(store: Store, now: datetime, lang: 
             end=now + timedelta(seconds=200),
             lang=lang, owner="Test User",
         ),
-        fmt=fmt,
     )
     assert "Test User" in out
-    if fmt == "html":
-        assert "<html" in out
+    assert "<html" in out
     if lang == "de":
         assert "Berichtszeitraum" in out
     else:
@@ -64,7 +61,48 @@ def test_report_handles_empty_window(store: Store) -> None:
     out = render_report(
         cfg=cfg, store=store,
         inputs=ReportInputs(start=start, end=end, lang="en"),
-        fmt="md",
     )
     assert "No outages" in out
     assert "100.000 %" in out  # uptime defaults to 100% on no data
+
+
+def test_report_toolbar_renders_when_enabled(store: Store) -> None:
+    cfg = Config.defaults()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    out = render_report(
+        cfg=cfg, store=store,
+        inputs=ReportInputs(
+            start=start, end=end, lang="en",
+            show_toolbar=True, since_spec="7d",
+            window_options=(
+                WindowOption(spec="7d", label="7d", active=True),
+                WindowOption(spec="30d", label="30d", active=False),
+            ),
+        ),
+    )
+    assert 'class="toolbar"' in out
+    assert "?lang=de&since=7d" in out
+
+
+def test_report_toolbar_absent_by_default(store: Store) -> None:
+    cfg = Config.defaults()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    out = render_report(
+        cfg=cfg, store=store,
+        inputs=ReportInputs(start=start, end=end, lang="en"),
+    )
+    assert 'class="toolbar"' not in out
+
+
+def test_unsupported_format_rejected(store: Store) -> None:
+    cfg = Config.defaults()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    with pytest.raises(ValueError):
+        render_report(
+            cfg=cfg, store=store,
+            inputs=ReportInputs(start=start, end=end, lang="en"),
+            fmt="md",
+        )

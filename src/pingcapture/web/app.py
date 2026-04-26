@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import __version__
@@ -20,6 +20,8 @@ from ..analytics import (
     window,
 )
 from ..config import Config
+from ..i18n import supported_languages
+from ..report import ReportInputs, WindowOption, parse_since, render_report
 from ..storage import Store
 
 STATIC_INDEX = Path(__file__).parent / "static" / "index.html"
@@ -41,6 +43,41 @@ def create_app(cfg: Config) -> FastAPI:
         if not STATIC_INDEX.exists():
             raise HTTPException(500, "static index missing")
         return HTMLResponse(STATIC_INDEX.read_text(encoding="utf-8"))
+
+    @app.get("/report", response_class=HTMLResponse)
+    def report_page(
+        lang: str = Query("en"),
+        since: str = Query("7d"),
+        owner: str = Query(""),
+    ) -> HTMLResponse:
+        if lang not in supported_languages():
+            raise HTTPException(400, f"unsupported lang: {lang}")
+        try:
+            delta = parse_since(since)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        end = _now()
+        start = end - delta
+        window_specs = [("24h", "24h"), ("7d", "7d"), ("30d", "30d"), ("90d", "90d")]
+        with _store() as store:
+            html = render_report(
+                cfg=cfg,
+                store=store,
+                inputs=ReportInputs(
+                    start=start,
+                    end=end,
+                    lang=lang,
+                    owner=owner,
+                    show_toolbar=True,
+                    since_spec=since,
+                    window_options=tuple(
+                        WindowOption(spec=spec, label=label, active=(spec == since))
+                        for spec, label in window_specs
+                    ),
+                ),
+                fmt="html",
+            )
+        return HTMLResponse(html)
 
     @app.get("/api/status")
     def api_status() -> JSONResponse:

@@ -90,8 +90,8 @@ def when_uptime(ctx: dict[str, Any]) -> None:
     ctx["uptime"] = uptime_pct(ctx["pings"])
 
 
-@when(parsers.parse("I render a report in {lang} as {fmt}"))
-def when_render(ctx: dict[str, Any], lang: str, fmt: str) -> None:
+@when(parsers.parse("I render a report in {lang}"))
+def when_render(ctx: dict[str, Any], lang: str) -> None:
     ctx["lang"] = lang
     cfg = Config.defaults()
     store = Store(ctx["db_path"])
@@ -103,7 +103,6 @@ def when_render(ctx: dict[str, Any], lang: str, fmt: str) -> None:
                 end=ctx["now"] + timedelta(seconds=60 * 5 + 1),
                 lang=lang, owner="Eric",
             ),
-            fmt=fmt,
         )
     finally:
         store.close()

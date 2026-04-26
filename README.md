@@ -64,12 +64,12 @@ You get a status pill (UP / DEGRADED / DOWN), uptime over a configurable window,
 
 ## Make a report for the provider
 
-```bash
-pingcapture report --since=7d --lang=en --format=html --out=report-en.html
-pingcapture report --since=7d --lang=de --format=html --out=report-de.html
-```
+The report lives at `/report` in the same web app. Open the dashboard, click "Report", switch language and time window with the toolbar at the top, then ⌘P → "Save as PDF" to send to your provider. The toolbar disappears when printing. The German version is hand-written, not machine-translated.
 
-Print to PDF from your browser if you need a PDF. The German version is hand-written, not machine-translated.
+```
+http://127.0.0.1:8765/report?lang=en&since=7d
+http://127.0.0.1:8765/report?lang=de&since=30d
+```
 
 ## Configure
 

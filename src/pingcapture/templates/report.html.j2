@@ -44,9 +44,53 @@
   .summary-grid .v { font-weight: 600; font-variant-numeric: tabular-nums; }
   footer { margin-top: 3rem; color: #888; font-size: 0.85rem; }
   .muted { color: #888; }
+
+  /* Screen-only navigation. Hidden when printing. */
+  .toolbar {
+    display: flex; gap: 0.6rem; align-items: center;
+    margin-bottom: 1.2rem; font-size: 0.88rem;
+    padding-bottom: 0.6rem; border-bottom: 1px solid #eee;
+  }
+  .toolbar a {
+    color: #0969da; text-decoration: none;
+    padding: 0.2rem 0.55rem; border-radius: 6px;
+    border: 1px solid transparent;
+  }
+  .toolbar a:hover { background: #f3f4f6; }
+  .toolbar a.active {
+    background: #0969da; color: #fff; border-color: #0969da; font-weight: 600;
+  }
+  .toolbar .sep { color: #ccc; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .hint { color: #888; font-size: 0.78rem; }
+
+  @media print {
+    .toolbar, .no-print { display: none !important; }
+    body { margin: 0.5in; max-width: none; color: #000; }
+    h2 { page-break-after: avoid; }
+    table, .grid-strip { page-break-inside: avoid; }
+    a { color: #000; text-decoration: none; }
+  }
 </style>
 </head>
 <body>
+{% if show_toolbar %}
+<nav class="toolbar">
+  <a href="/">&larr; {{ t.t("toolbar_back") }}</a>
+  <span class="sep">|</span>
+  <span>{{ t.t("toolbar_window") }}:</span>
+  {% for opt in window_options -%}
+  <a href="?lang={{ lang }}&since={{ opt.spec }}"{% if opt.active %} class="active"{% endif %}>{{ opt.label }}</a>
+  {% endfor %}
+  <span class="sep">|</span>
+  <span>{{ t.t("toolbar_language") }}:</span>
+  <a href="?lang=en&since={{ since_spec }}"{% if lang == "en" %} class="active"{% endif %}>EN</a>
+  <a href="?lang=de&since={{ since_spec }}"{% if lang == "de" %} class="active"{% endif %}>DE</a>
+  <span class="spacer"></span>
+  <span class="hint">{{ t.t("toolbar_print_hint") }}</span>
+</nav>
+{% endif %}
+
 <h1>{{ t.t("report_title") }}</h1>
 <p class="muted">{{ t.t("report_subtitle", owner=owner) }}</p>
 

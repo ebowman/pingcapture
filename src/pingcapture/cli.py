@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -21,7 +19,6 @@ from .config import (
 )
 from .mtr import run_mtr_scheduler
 from .pinger import run_pinger
-from .report import ReportInputs, parse_since, render_report, write_report
 from .service import LABEL, install, logs_dir, plist_path, status, uninstall
 from .storage import Store
 from .web.app import create_app
@@ -101,45 +98,12 @@ async def _run(cfg: Config) -> None:
 
 
 @main.command()
-@click.option("--since", "since_spec", default="24h", show_default=True,
-              help="Window like 30m, 24h, 7d, 2w")
-@click.option("--lang", type=click.Choice(["en", "de"]), default="en", show_default=True)
-@click.option("--format", "fmt", type=click.Choice(["html", "md"]), default="html", show_default=True)
-@click.option("--out", "out_path", type=click.Path(path_type=Path), default=None,
-              help="Output path. If omitted, prints to stdout.")
-@click.option("--owner", default="", help="Customer name to include in the report")
-@click.pass_obj
-def report(
-    cfg: Config,
-    since_spec: str,
-    lang: str,
-    fmt: str,
-    out_path: Path | None,
-    owner: str,
-) -> None:
-    """Generate a bilingual reliability report."""
-    end = datetime.now(UTC)
-    start = end - parse_since(since_spec)
-    with Store(cfg.db_path) as store:
-        content = render_report(
-            cfg=cfg,
-            store=store,
-            inputs=ReportInputs(start=start, end=end, lang=lang, owner=owner),
-            fmt=fmt,
-        )
-    if out_path:
-        write_report(out_path, content)
-        click.echo(f"wrote {out_path}")
-    else:
-        sys.stdout.write(content)
-
-
-@main.command()
 @click.pass_obj
 def console(cfg: Config) -> None:
-    """Serve the local web console."""
+    """Serve the local web console (dashboard + report)."""
     app = create_app(cfg)
     click.echo(f"console at http://{cfg.web_host}:{cfg.web_port}")
+    click.echo(f"report  at http://{cfg.web_host}:{cfg.web_port}/report?lang=en&since=7d")
     uvicorn.run(app, host=cfg.web_host, port=cfg.web_port, log_level="warning")
 
 
