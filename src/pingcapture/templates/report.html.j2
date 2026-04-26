@@ -8,23 +8,53 @@
          max-width: 880px; margin: 2rem auto; padding: 0 1rem; color: #222; line-height: 1.5; }
   h1 { margin-bottom: 0.25rem; }
   h2 { margin-top: 2.4rem; border-bottom: 1px solid #ddd; padding-bottom: 0.2rem; }
-  .grid-strip {
-    display: flex; gap: 1px; padding: 0.4rem 0;
-    flex-wrap: nowrap; overflow-x: auto;
+  .calendar {
+    display: grid;
+    grid-template-columns: 7em repeat(24, 1fr);
+    gap: 1px;
+    margin-top: 0.6rem;
+    font-size: 0.7rem;
   }
-  .grid-cell {
-    flex: 1 0 4px; min-width: 3px; height: 28px;
-    border-radius: 1.5px;
+  .calendar .row-label {
+    color: #555; padding-right: 0.5rem; text-align: right;
+    line-height: 14px; font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  .grid-cell.sev-none    { background: #2ea043; }
-  .grid-cell.sev-flicker { background: #d4a72c; }
-  .grid-cell.sev-minor   { background: #db8c2a; }
-  .grid-cell.sev-major   { background: #e5534b; }
-  .grid-cell.sev-severe  { background: #8b1f1f; }
-  .grid-cell.sev-no_data { background: #d0d7de; }
-  .grid-axis { display: flex; justify-content: space-between;
-               color: #888; font-size: 0.78rem; margin-top: 0.2rem;
-               font-variant-numeric: tabular-nums; }
+  .calendar .col-header {
+    color: #888; font-size: 0.65rem; text-align: center;
+    padding-bottom: 0.2rem; font-variant-numeric: tabular-nums;
+  }
+  .cal-cell { height: 14px; border-radius: 1px; }
+  .cal-cell.sev-none    { background: #2ea043; }
+  .cal-cell.sev-flicker { background: #d4a72c; }
+  .cal-cell.sev-minor   { background: #db8c2a; }
+  .cal-cell.sev-major   { background: #e5534b; }
+  .cal-cell.sev-severe  { background: #8b1f1f; }
+  .cal-cell.sev-no_data { background: #eaeef2; }
+
+  .hod-strip {
+    display: grid;
+    grid-template-columns: 7em repeat(24, 1fr);
+    gap: 1px;
+    margin-top: 1.2rem;
+    font-size: 0.7rem;
+  }
+  .hod-strip .row-label {
+    color: #555; padding-right: 0.5rem; text-align: right;
+    line-height: 22px; white-space: nowrap;
+  }
+  .hod-cell {
+    height: 22px; border-radius: 1px;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(0,0,0,0.55); font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .hod-cell.sev-none    { background: #2ea043; }
+  .hod-cell.sev-flicker { background: #d4a72c; }
+  .hod-cell.sev-minor   { background: #db8c2a; }
+  .hod-cell.sev-major   { background: #e5534b; color: rgba(255,255,255,0.85); }
+  .hod-cell.sev-severe  { background: #8b1f1f; color: rgba(255,255,255,0.9); }
+  .hod-cell.sev-no_data { background: #eaeef2; color: #888; }
   .legend { display: flex; gap: 0.9rem; flex-wrap: wrap;
             margin-top: 0.5rem; font-size: 0.82rem; color: #555; }
   .legend-swatch { display: inline-block; width: 0.7rem; height: 0.7rem;
@@ -117,12 +147,28 @@
 
 <h2>{{ t.t("grid_heading") }}</h2>
 <p class="muted">{{ t.t("grid_intro") }}</p>
-<div class="grid-strip">
-{% for b in grid_buckets -%}
-<div class="grid-cell sev-{{ b.severity }}" title="{{ b.start_str }} — {{ "%.2f" % b.uptime_pct }}% uptime{% if b.outage_count %}, {{ b.outage_count }} outage{% if b.outage_count != 1 %}s{% endif %}, longest {{ b.longest_outage_str }}{% endif %}"></div>
-{%- endfor %}
+<div class="calendar" role="grid" aria-label="Outage calendar">
+  <div></div>
+  {% for h in range(24) -%}
+  <div class="col-header">{{ "%02d" % h }}</div>
+  {%- endfor %}
+  {% for row in calendar_rows -%}
+  <div class="row-label">{{ row.date_str }}</div>
+  {% for c in row.cells -%}
+  <div class="cal-cell sev-{{ c.severity }}" title="{{ row.iso_date }} {{ "%02d" % c.hour }}:00 UTC — {% if c.severity == 'no_data' %}no data{% else %}{{ "%.1f" % c.uptime_pct }}% uptime{% if c.longest_outage_str %}, longest {{ c.longest_outage_str }}{% endif %}{% endif %}"></div>
+  {%- endfor %}
+  {%- endfor %}
 </div>
-<div class="grid-axis">{{ t.t("grid_axis", start=grid_start_str, end=grid_end_str) }}</div>
+
+<h3 style="margin-top:1.6rem;font-size:0.95rem;">{{ t.t("grid_hod_heading") }}</h3>
+<p class="muted" style="margin-top:0.2rem;">{{ t.t("grid_hod_intro") }}</p>
+<div class="hod-strip">
+  <div class="row-label">{{ t.t("grid_hod_heading") }}</div>
+  {% for h in hour_summary -%}
+  <div class="hod-cell sev-{{ h.severity }}" title="{{ "%02d" % h.hour }}:00 UTC — worst {{ h.severity }}, {{ h.days_with_failure }}/{{ h.days_observed }} days had failures">{{ "%02d" % h.hour }}</div>
+  {%- endfor %}
+</div>
+
 <div class="legend">
   <span><i class="legend-swatch sev-none"></i>{{ t.t("grid_legend_none") }}</span>
   <span><i class="legend-swatch sev-flicker"></i>{{ t.t("grid_legend_flicker") }}</span>

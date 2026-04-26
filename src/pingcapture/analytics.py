@@ -326,8 +326,105 @@ def floor_to_hour(ts: datetime) -> datetime:
     return ts.replace(minute=0, second=0, microsecond=0)
 
 
+@dataclass(frozen=True)
+class CalendarRow:
+    """One row of the report's calendar grid: a day with 24 hourly cells."""
+    date: datetime  # midnight UTC of the day
+    cells: list[Bucket]  # length 24, indexed by hour-of-day; missing hours = no_data
+
+
+def pivot_buckets_by_day(buckets: list[Bucket]) -> list[CalendarRow]:
+    """Reshape a flat list of hourly buckets into one row per day.
+
+    Each row has exactly 24 cells, indexed 0..23 by UTC hour. Missing hours
+    (e.g. partial first/last day) are filled with synthetic no-data buckets so
+    the calendar always renders as a clean rectangle. Rows are sorted with the
+    most recent day first — that's the order people actually scan a report in.
+    """
+    by_day: dict[datetime, dict[int, Bucket]] = {}
+    for b in buckets:
+        ts = b.start if b.start.tzinfo else b.start.replace(tzinfo=UTC)
+        day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        by_day.setdefault(day, {})[ts.hour] = b
+    rows: list[CalendarRow] = []
+    for day in sorted(by_day.keys(), reverse=True):
+        hours = by_day[day]
+        cells: list[Bucket] = []
+        for h in range(24):
+            if h in hours:
+                cells.append(hours[h])
+            else:
+                slot_start = day.replace(hour=h)
+                cells.append(
+                    Bucket(
+                        start=slot_start,
+                        end=slot_start + timedelta(hours=1),
+                        samples=0, failed=0,
+                        longest_outage_s=0.0, outage_count=0,
+                        severity=SEVERITY_NO_DATA,
+                    )
+                )
+        rows.append(CalendarRow(date=day, cells=cells))
+    return rows
+
+
+# Severity ordering for "worst severity" aggregation. Higher = worse.
+_SEVERITY_RANK = {
+    SEVERITY_NO_DATA: -1,  # don't let absent data dominate the aggregate
+    SEVERITY_NONE: 0,
+    SEVERITY_FLICKER: 1,
+    SEVERITY_MINOR: 2,
+    SEVERITY_MAJOR: 3,
+    SEVERITY_SEVERE: 4,
+}
+
+
+@dataclass(frozen=True)
+class HourSummary:
+    """Aggregated severity for a single hour-of-day across the whole window."""
+    hour: int  # 0..23
+    days_observed: int
+    days_with_failure: int
+    worst_severity: str
+    total_outage_s: float
+
+
+def summarize_by_hour_of_day(buckets: list[Bucket]) -> list[HourSummary]:
+    """Collapse hourly buckets into 24 hour-of-day summaries.
+
+    For each hour 0..23, returns the worst severity seen at that hour over the
+    window, plus simple counts. Useful for surfacing time-of-day patterns the
+    eye misses in a long calendar grid.
+    """
+    by_hour: dict[int, list[Bucket]] = {h: [] for h in range(24)}
+    for b in buckets:
+        ts = b.start if b.start.tzinfo else b.start.replace(tzinfo=UTC)
+        by_hour[ts.hour].append(b)
+    out: list[HourSummary] = []
+    for hour in range(24):
+        items = by_hour[hour]
+        observed = [b for b in items if b.severity != SEVERITY_NO_DATA]
+        with_fail = [b for b in observed if b.failed > 0]
+        if observed:
+            worst = max(observed, key=lambda b: _SEVERITY_RANK[b.severity]).severity
+        else:
+            worst = SEVERITY_NO_DATA
+        out.append(
+            HourSummary(
+                hour=hour,
+                days_observed=len(observed),
+                days_with_failure=len(with_fail),
+                worst_severity=worst,
+                total_outage_s=sum(b.longest_outage_s for b in observed),
+            )
+        )
+    return out
+
+
 __all__ = [
     "Bucket",
+    "CalendarRow",
+    "HourSummary",
     "LatencyStats",
     "Outage",
     "PathChange",
@@ -343,6 +440,8 @@ __all__ = [
     "floor_to_hour",
     "latency_stats",
     "mtr_path_changes",
+    "pivot_buckets_by_day",
+    "summarize_by_hour_of_day",
     "uptime_pct",
     "window",
 ]

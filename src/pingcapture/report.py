@@ -18,6 +18,8 @@ from .analytics import (
     floor_to_hour,
     latency_stats,
     mtr_path_changes,
+    pivot_buckets_by_day,
+    summarize_by_hour_of_day,
     uptime_pct,
 )
 from .config import Config
@@ -109,6 +111,8 @@ def render_report(
     buckets = bucket_outages(
         pings, window_start=grid_start, window_end=grid_end, bucket_size_s=3600.0
     )
+    calendar = pivot_buckets_by_day(buckets)
+    hour_summary = summarize_by_hour_of_day(buckets)
 
     context: dict[str, object] = {
         "lang": inputs.lang,
@@ -149,6 +153,34 @@ def render_report(
         ],
         "grid_start_str": _fmt_ts(grid_start),
         "grid_end_str": _fmt_ts(grid_end),
+        "calendar_rows": [
+            {
+                "date_str": row.date.strftime("%a %b %-d"),
+                "iso_date": row.date.strftime("%Y-%m-%d"),
+                "cells": [
+                    {
+                        "hour": i,
+                        "severity": c.severity,
+                        "longest_outage_str": (
+                            _format_duration(t, c.longest_outage_s)
+                            if c.longest_outage_s > 0 else ""
+                        ),
+                        "uptime_pct": c.uptime_pct,
+                    }
+                    for i, c in enumerate(row.cells)
+                ],
+            }
+            for row in calendar
+        ],
+        "hour_summary": [
+            {
+                "hour": h.hour,
+                "severity": h.worst_severity,
+                "days_observed": h.days_observed,
+                "days_with_failure": h.days_with_failure,
+            }
+            for h in hour_summary
+        ],
     }
     template = _env().get_template(f"report.{fmt}.j2")
     return template.render(**context)
