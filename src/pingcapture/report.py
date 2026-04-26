@@ -13,8 +13,10 @@ from . import __version__
 from .analytics import (
     Outage,
     PathChange,
+    bucket_outages,
     buffer_bloat_score,
     detect_outages,
+    floor_to_hour,
     latency_stats,
     mtr_path_changes,
     uptime_pct,
@@ -91,6 +93,11 @@ def render_report(
     outages = detect_outages(pings)
     longest = max((o.duration_s for o in outages), default=0.0)
     total_out = sum(o.duration_s for o in outages)
+    grid_start = floor_to_hour(inputs.start)
+    grid_end = floor_to_hour(inputs.end) + timedelta(hours=1)
+    buckets = bucket_outages(
+        pings, window_start=grid_start, window_end=grid_end, bucket_size_s=3600.0
+    )
 
     context: dict[str, object] = {
         "lang": inputs.lang,
@@ -112,6 +119,19 @@ def render_report(
         "mtr_interval_min": int(cfg.mtr_interval_s // 60),
         "latency": latency_stats(pings),
         "path_changes": [_path_change_view(c) for c in mtr_path_changes(mtr_runs)],
+        "grid_buckets": [
+            {
+                "severity": b.severity,
+                "start_str": _fmt_ts(b.start),
+                "uptime_pct": b.uptime_pct,
+                "outage_count": b.outage_count,
+                "longest_outage_s": b.longest_outage_s,
+                "longest_outage_str": _format_duration(t, b.longest_outage_s) if b.longest_outage_s > 0 else "",
+            }
+            for b in buckets
+        ],
+        "grid_start_str": _fmt_ts(grid_start),
+        "grid_end_str": _fmt_ts(grid_end),
     }
     template = _env().get_template(f"report.{fmt}.j2")
     return template.render(**context)

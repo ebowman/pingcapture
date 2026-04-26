@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -10,8 +10,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import __version__
 from ..analytics import (
+    bucket_outages,
     buffer_bloat_score,
     detect_outages,
+    floor_to_hour,
     latency_stats,
     mtr_path_changes,
     uptime_pct,
@@ -126,6 +128,42 @@ def create_app(cfg: Config) -> FastAPI:
                     }
                     for p in pings
                 ]
+            }
+        )
+
+    @app.get("/api/buckets")
+    def api_buckets(days: float = 30.0, bucket_hours: float = 1.0) -> JSONResponse:
+        # Align the window to the hour boundary so grid columns line up with
+        # wall-clock hours. The current (partial) hour is included.
+        now = _now()
+        end = floor_to_hour(now) + timedelta(hours=1)
+        start = floor_to_hour(end - timedelta(days=days))
+        with _store() as store:
+            pings = store.pings_between(start, end)
+        buckets = bucket_outages(
+            pings,
+            window_start=start,
+            window_end=end,
+            bucket_size_s=bucket_hours * 3600.0,
+        )
+        return JSONResponse(
+            {
+                "window_start": start.isoformat(),
+                "window_end": end.isoformat(),
+                "bucket_hours": bucket_hours,
+                "buckets": [
+                    {
+                        "start": b.start.isoformat(),
+                        "end": b.end.isoformat(),
+                        "samples": b.samples,
+                        "failed": b.failed,
+                        "longest_outage_s": b.longest_outage_s,
+                        "outage_count": b.outage_count,
+                        "uptime_pct": b.uptime_pct,
+                        "severity": b.severity,
+                    }
+                    for b in buckets
+                ],
             }
         )
 

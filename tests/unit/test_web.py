@@ -57,3 +57,18 @@ def test_index_serves_html(tmp_db) -> None:
     assert r.status_code == 200
     assert "pingcapture" in r.text
     assert "<html" in r.text
+
+
+def test_buckets_endpoint(tmp_db, now) -> None:
+    s = Store(tmp_db)
+    _seed(s, now)
+    s.close()
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/api/buckets?days=1&bucket_hours=1")
+    assert r.status_code == 200
+    body = r.json()
+    assert "buckets" in body
+    assert body["bucket_hours"] == 1.0
+    assert all("severity" in b for b in body["buckets"])

@@ -11,7 +11,7 @@ from __future__ import annotations
 import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from .storage import MtrRun, PingResult
 
@@ -220,12 +220,127 @@ def window(now: datetime, *, hours: float | None = None, days: float | None = No
     return (now - delta, now)
 
 
+# Severity thresholds for the status grid. Each bucket gets the level whose
+# threshold its longest outage exceeds. None means no failed probes at all.
+SEVERITY_NONE = "none"        # green
+SEVERITY_FLICKER = "flicker"  # yellow — failed probes but no outage > 5s
+SEVERITY_MINOR = "minor"      # orange — > 15s
+SEVERITY_MAJOR = "major"      # red — > 30s
+SEVERITY_SEVERE = "severe"    # dark red — >= 5min
+SEVERITY_NO_DATA = "no_data"  # grey
+
+
+@dataclass(frozen=True)
+class Bucket:
+    start: datetime
+    end: datetime
+    samples: int
+    failed: int
+    longest_outage_s: float
+    outage_count: int
+    severity: str
+
+    @property
+    def uptime_pct(self) -> float:
+        if self.samples == 0:
+            return 0.0
+        return 100.0 * (self.samples - self.failed) / self.samples
+
+
+def _severity_for(longest_s: float, failed: int, samples: int) -> str:
+    if samples == 0:
+        return SEVERITY_NO_DATA
+    if failed == 0:
+        return SEVERITY_NONE
+    if longest_s >= 300:
+        return SEVERITY_SEVERE
+    if longest_s > 30:
+        return SEVERITY_MAJOR
+    if longest_s > 15:
+        return SEVERITY_MINOR
+    if longest_s > 5:
+        return SEVERITY_FLICKER
+    # Failures present but no outage met the 5s threshold — single dropped
+    # probes scattered across rotation slots. Still call it a flicker.
+    return SEVERITY_FLICKER
+
+
+def bucket_outages(
+    pings: Iterable[PingResult],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    bucket_size_s: float = 3600.0,
+) -> list[Bucket]:
+    """Bucket pings into fixed-size windows and classify each by worst outage.
+
+    Buckets are aligned to ``window_start`` and stepped by ``bucket_size_s``.
+    Outages are computed per-bucket using the same detector as the rest of the
+    system, so a bucket that contains a single 90-second outage is classified
+    by *that* outage, not by the bucket's overall uptime percentage.
+    """
+    if window_end <= window_start:
+        return []
+    sorted_pings = sorted(
+        (p for p in pings if window_start <= p.ts < window_end),
+        key=lambda p: p.ts,
+    )
+
+    bucket_count = int((window_end - window_start).total_seconds() / bucket_size_s) + 1
+    buckets: list[list[PingResult]] = [[] for _ in range(bucket_count)]
+    for p in sorted_pings:
+        idx = int((p.ts - window_start).total_seconds() / bucket_size_s)
+        if 0 <= idx < bucket_count:
+            buckets[idx].append(p)
+
+    out: list[Bucket] = []
+    delta = timedelta(seconds=bucket_size_s)
+    for i, items in enumerate(buckets):
+        b_start = window_start + delta * i
+        b_end = b_start + delta
+        if b_end > window_end:
+            b_end = window_end
+        outages = detect_outages(items)
+        longest = max((o.duration_s for o in outages), default=0.0)
+        failed = sum(1 for p in items if not p.success)
+        out.append(
+            Bucket(
+                start=b_start,
+                end=b_end,
+                samples=len(items),
+                failed=failed,
+                longest_outage_s=longest,
+                outage_count=len(outages),
+                severity=_severity_for(longest, failed, len(items)),
+            )
+        )
+    # Trim the final bucket if its window collapsed to nothing.
+    while out and out[-1].start >= window_end:
+        out.pop()
+    return out
+
+
+def floor_to_hour(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.replace(minute=0, second=0, microsecond=0)
+
+
 __all__ = [
+    "Bucket",
     "LatencyStats",
     "Outage",
     "PathChange",
+    "SEVERITY_FLICKER",
+    "SEVERITY_MAJOR",
+    "SEVERITY_MINOR",
+    "SEVERITY_NONE",
+    "SEVERITY_NO_DATA",
+    "SEVERITY_SEVERE",
+    "bucket_outages",
     "buffer_bloat_score",
     "detect_outages",
+    "floor_to_hour",
     "latency_stats",
     "mtr_path_changes",
     "uptime_pct",

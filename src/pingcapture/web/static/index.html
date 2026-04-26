@@ -84,6 +84,60 @@
   footer { padding: 1.5rem; text-align: center; color: var(--muted); font-size: 0.8rem; }
   .pulse { animation: pulse 1.5s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+  /* Status-page outage grid */
+  .grid-strip {
+    display: flex; gap: 2px;
+    padding: 0.5rem 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .grid-cell {
+    flex: 1 0 6px;
+    min-width: 4px;
+    height: 36px;
+    border-radius: 2px;
+    background: var(--cell-bg, #2a2f37);
+    cursor: pointer;
+    transition: transform 0.08s, outline-color 0.08s;
+    outline: 1px solid transparent;
+  }
+  .grid-cell:hover { transform: scaleY(1.12); outline-color: var(--accent); }
+  .grid-cell.sev-none    { background: #2ea043; }
+  .grid-cell.sev-flicker { background: #d4a72c; }
+  .grid-cell.sev-minor   { background: #db8c2a; }
+  .grid-cell.sev-major   { background: #e5534b; }
+  .grid-cell.sev-severe  { background: #8b1f1f; }
+  .grid-cell.sev-no_data { background: #30363d; }
+  .grid-axis {
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 0.72rem;
+    margin-top: 0.3rem; font-variant-numeric: tabular-nums;
+  }
+  .legend {
+    display: flex; gap: 0.9rem; flex-wrap: wrap;
+    margin-top: 0.6rem; font-size: 0.78rem; color: var(--muted);
+    align-items: center;
+  }
+  .legend-swatch {
+    display: inline-block; width: 0.7rem; height: 0.7rem;
+    border-radius: 2px; margin-right: 0.3rem; vertical-align: middle;
+  }
+  /* Floating tooltip */
+  .grid-tip {
+    position: fixed;
+    background: #0b0f14; color: var(--text);
+    border: 1px solid var(--grid); border-radius: 6px;
+    padding: 0.5rem 0.7rem; font-size: 0.8rem;
+    pointer-events: none; z-index: 50;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+    min-width: 180px;
+    transform: translate(-50%, calc(-100% - 8px));
+    opacity: 0; transition: opacity 0.08s;
+  }
+  .grid-tip.show { opacity: 1; }
+  .grid-tip .tk { color: var(--muted); margin-right: 0.4rem; }
+  .grid-tip .ts { font-weight: 600; margin-bottom: 0.3rem; display: block; }
 </style>
 </head>
 <body>
@@ -93,7 +147,31 @@
 </header>
 
 <main>
-  <section class="grid grid-3">
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+      <h2 style="margin:0;">Hourly outage grid</h2>
+      <div class="controls">
+        <button data-grid-days="7"  >7d</button>
+        <button data-grid-days="30" class="active">30d</button>
+        <button data-grid-days="90" >90d</button>
+      </div>
+    </div>
+    <div id="grid-strip" class="grid-strip" aria-label="Hourly outage timeline"></div>
+    <div class="grid-axis">
+      <span id="grid-axis-start">—</span>
+      <span id="grid-axis-end">now</span>
+    </div>
+    <div class="legend">
+      <span><i class="legend-swatch" style="background:#2ea043;"></i>up</span>
+      <span><i class="legend-swatch" style="background:#d4a72c;"></i>flicker (≤5 s)</span>
+      <span><i class="legend-swatch" style="background:#db8c2a;"></i>&gt; 15 s</span>
+      <span><i class="legend-swatch" style="background:#e5534b;"></i>&gt; 30 s</span>
+      <span><i class="legend-swatch" style="background:#8b1f1f;"></i>≥ 5 min</span>
+      <span><i class="legend-swatch" style="background:#30363d;"></i>no data</span>
+    </div>
+  </section>
+
+  <section class="grid grid-3" style="margin-top:1rem;">
     <div class="card">
       <h2>Uptime (last <span id="window-label">24h</span>)</h2>
       <div class="row">
@@ -171,6 +249,8 @@
   </section>
 </main>
 
+<div id="grid-tip" class="grid-tip" role="tooltip" aria-hidden="true"></div>
+
 <footer>auto-refresh every 10s &middot; <span id="version"></span></footer>
 
 <script>
@@ -185,6 +265,7 @@ const fmtMs = (v) => v == null ? "—" : v.toFixed(1);
 const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, "") : "—";
 
 let currentWindow = 24;
+let currentGridDays = 30;
 let chart = null;
 
 const palette = [
@@ -195,11 +276,12 @@ const colorFor = (key, idx) => palette[idx % palette.length];
 
 async function refresh() {
   try {
-    const [status, summary, ts, recent] = await Promise.all([
+    const [status, summary, ts, recent, buckets] = await Promise.all([
       fetch("/api/status").then(r => r.json()),
       fetch(`/api/summary?hours=${currentWindow}`).then(r => r.json()),
       fetch(`/api/timeseries?hours=${currentWindow}`).then(r => r.json()),
       fetch("/api/recent?limit=50").then(r => r.json()),
+      fetch(`/api/buckets?days=${currentGridDays}&bucket_hours=1`).then(r => r.json()),
     ]);
     renderStatus(status);
     renderSummary(summary);
@@ -207,11 +289,91 @@ async function refresh() {
     renderRecent(recent);
     renderOutages(summary);
     renderPaths(summary);
+    renderGrid(buckets);
     document.getElementById("version").textContent = "pingcapture v" + status.version;
   } catch (e) {
     console.error(e);
   }
 }
+
+function renderGrid(payload) {
+  const strip = document.getElementById("grid-strip");
+  strip.innerHTML = "";
+  for (const b of payload.buckets) {
+    const cell = document.createElement("div");
+    cell.className = `grid-cell sev-${b.severity}`;
+    cell.dataset.start = b.start;
+    cell.dataset.end = b.end;
+    cell.dataset.samples = b.samples;
+    cell.dataset.failed = b.failed;
+    cell.dataset.longest = b.longest_outage_s;
+    cell.dataset.outages = b.outage_count;
+    cell.dataset.uptime = b.uptime_pct.toFixed(2);
+    cell.dataset.severity = b.severity;
+    strip.appendChild(cell);
+  }
+  document.getElementById("grid-axis-start").textContent =
+    fmtDateShort(payload.window_start);
+  document.getElementById("grid-axis-end").textContent = "now";
+}
+
+function fmtDateShort(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function fmtHourLocal(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+const sevLabel = {
+  none: "Up — no failed probes",
+  flicker: "Flicker — failures, no outage > 5 s",
+  minor: "Minor outage — > 15 s",
+  major: "Major outage — > 30 s",
+  severe: "Severe outage — ≥ 5 min",
+  no_data: "No data captured",
+};
+
+const tip = document.getElementById("grid-tip");
+document.getElementById("grid-strip").addEventListener("mouseover", (e) => {
+  const cell = e.target.closest(".grid-cell");
+  if (!cell) return;
+  const longest = parseFloat(cell.dataset.longest);
+  tip.innerHTML = `
+    <span class="ts">${fmtHourLocal(cell.dataset.start)}</span>
+    <div><span class="tk">status:</span>${sevLabel[cell.dataset.severity]}</div>
+    <div><span class="tk">uptime:</span>${cell.dataset.uptime}%</div>
+    <div><span class="tk">probes:</span>${cell.dataset.samples} (${cell.dataset.failed} failed)</div>
+    <div><span class="tk">outages:</span>${cell.dataset.outages}${
+      longest > 0 ? `, longest ${fmtSec(longest)}` : ""
+    }</div>
+  `;
+  const r = cell.getBoundingClientRect();
+  tip.style.left = (r.left + r.width / 2) + "px";
+  tip.style.top = r.top + "px";
+  tip.classList.add("show");
+});
+document.getElementById("grid-strip").addEventListener("mouseout", (e) => {
+  if (!e.relatedTarget || !e.relatedTarget.closest(".grid-cell")) {
+    tip.classList.remove("show");
+  }
+});
+document.getElementById("grid-strip").addEventListener("click", (e) => {
+  const cell = e.target.closest(".grid-cell");
+  if (!cell) return;
+  // Zoom the latency chart to a 6h window centered on this bucket.
+  // Quick win: just switch to 24h view and let the user scroll. A proper
+  // window-zoom needs a backend filter — file as follow-up if you want it.
+  currentWindow = 24;
+  document.querySelectorAll(".controls button[data-window]").forEach(b => {
+    b.classList.toggle("active", b.dataset.window === "24");
+  });
+  refresh();
+});
 
 function renderStatus(s) {
   const el = document.getElementById("status");
@@ -343,6 +505,15 @@ document.querySelectorAll(".controls button[data-window]").forEach(btn => {
     document.querySelectorAll(".controls button[data-window]").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     currentWindow = parseFloat(btn.dataset.window);
+    refresh();
+  });
+});
+
+document.querySelectorAll(".controls button[data-grid-days]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".controls button[data-grid-days]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentGridDays = parseFloat(btn.dataset.gridDays);
     refresh();
   });
 });

@@ -8,6 +8,33 @@
          max-width: 880px; margin: 2rem auto; padding: 0 1rem; color: #222; line-height: 1.5; }
   h1 { margin-bottom: 0.25rem; }
   h2 { margin-top: 2.4rem; border-bottom: 1px solid #ddd; padding-bottom: 0.2rem; }
+  .grid-strip {
+    display: flex; gap: 1px; padding: 0.4rem 0;
+    flex-wrap: nowrap; overflow-x: auto;
+  }
+  .grid-cell {
+    flex: 1 0 4px; min-width: 3px; height: 28px;
+    border-radius: 1.5px;
+  }
+  .grid-cell.sev-none    { background: #2ea043; }
+  .grid-cell.sev-flicker { background: #d4a72c; }
+  .grid-cell.sev-minor   { background: #db8c2a; }
+  .grid-cell.sev-major   { background: #e5534b; }
+  .grid-cell.sev-severe  { background: #8b1f1f; }
+  .grid-cell.sev-no_data { background: #d0d7de; }
+  .grid-axis { display: flex; justify-content: space-between;
+               color: #888; font-size: 0.78rem; margin-top: 0.2rem;
+               font-variant-numeric: tabular-nums; }
+  .legend { display: flex; gap: 0.9rem; flex-wrap: wrap;
+            margin-top: 0.5rem; font-size: 0.82rem; color: #555; }
+  .legend-swatch { display: inline-block; width: 0.7rem; height: 0.7rem;
+                   border-radius: 1.5px; margin-right: 0.3rem; vertical-align: middle; }
+  .legend-swatch.sev-none    { background: #2ea043; }
+  .legend-swatch.sev-flicker { background: #d4a72c; }
+  .legend-swatch.sev-minor   { background: #db8c2a; }
+  .legend-swatch.sev-major   { background: #e5534b; }
+  .legend-swatch.sev-severe  { background: #8b1f1f; }
+  .legend-swatch.sev-no_data { background: #d0d7de; }
   table { border-collapse: collapse; width: 100%; margin-top: 0.6rem; font-size: 0.92rem; }
   th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; }
   th { background: #fafafa; }
@@ -42,6 +69,23 @@
   <div class="v">{{ longest_outage_str }}</div>
   <div class="k">{{ t.t("summary_buffer_bloat") }}</div>
   <div class="v">{% if buffer_bloat is none %}—{% else %}{{ "%.1f" % buffer_bloat }} ms{% endif %}</div>
+</div>
+
+<h2>{{ t.t("grid_heading") }}</h2>
+<p class="muted">{{ t.t("grid_intro") }}</p>
+<div class="grid-strip">
+{% for b in grid_buckets -%}
+<div class="grid-cell sev-{{ b.severity }}" title="{{ b.start_str }} — {{ "%.2f" % b.uptime_pct }}% uptime{% if b.outage_count %}, {{ b.outage_count }} outage{% if b.outage_count != 1 %}s{% endif %}, longest {{ b.longest_outage_str }}{% endif %}"></div>
+{%- endfor %}
+</div>
+<div class="grid-axis">{{ t.t("grid_axis", start=grid_start_str, end=grid_end_str) }}</div>
+<div class="legend">
+  <span><i class="legend-swatch sev-none"></i>{{ t.t("grid_legend_none") }}</span>
+  <span><i class="legend-swatch sev-flicker"></i>{{ t.t("grid_legend_flicker") }}</span>
+  <span><i class="legend-swatch sev-minor"></i>{{ t.t("grid_legend_minor") }}</span>
+  <span><i class="legend-swatch sev-major"></i>{{ t.t("grid_legend_major") }}</span>
+  <span><i class="legend-swatch sev-severe"></i>{{ t.t("grid_legend_severe") }}</span>
+  <span><i class="legend-swatch sev-no_data"></i>{{ t.t("grid_legend_no_data") }}</span>
 </div>
 
 <h2>{{ t.t("methodology_heading") }}</h2>
