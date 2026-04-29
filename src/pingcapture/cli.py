@@ -86,11 +86,33 @@ async def _run(cfg: Config) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal, sig)
 
+    app = create_app(cfg)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=cfg.web_host,
+            port=cfg.web_port,
+            log_level="warning",
+            lifespan="on",
+        )
+    )
+    # uvicorn installs its own signal handlers when run via Server.serve();
+    # we want our handler to drive shutdown, so disable uvicorn's.
+    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+    async def _serve_until_stop() -> None:
+        serve_task = asyncio.create_task(server.serve())
+        await stop.wait()
+        server.should_exit = True
+        await serve_task
+
     log.info("pingcapture %s starting (db=%s)", __version__, cfg.db_path)
+    log.info("console at http://%s:%d", cfg.web_host, cfg.web_port)
     try:
         await asyncio.gather(
             run_pinger(cfg, store, stop),
             run_mtr_scheduler(cfg, store, stop),
+            _serve_until_stop(),
         )
     finally:
         store.close()
