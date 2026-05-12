@@ -171,6 +171,77 @@ def latency_stats(pings: Iterable[PingResult]) -> list[LatencyStats]:
     return out
 
 
+@dataclass(frozen=True)
+class LatencyBucket:
+    """One time-bucket of latency samples for a single (target, kind)."""
+    ts: datetime
+    target: str
+    label: str
+    kind: str
+    samples: int
+    failed: int
+    p50_ms: float | None
+    p95_ms: float | None
+
+
+def bucket_size_for_window(hours: float) -> int:
+    """Pick a sensible bucket size in seconds for a given window width.
+
+    0 means "do not bucket; return raw samples". Past ~1 hour the chart cannot
+    show per-probe detail anyway, so we collapse aggressively.
+    """
+    if hours <= 1.0:
+        return 0
+    if hours <= 6.0:
+        return 30
+    if hours <= 24.0:
+        return 120
+    return 900
+
+
+def downsample_latency(
+    pings: Iterable[PingResult],
+    *,
+    window_start: datetime,
+    bucket_size_s: int,
+) -> list[LatencyBucket]:
+    """Group pings into time-buckets per (target, kind) with p50/p95/counts.
+
+    Buckets are aligned to ``window_start``. Only successful probes with a
+    latency_ms value contribute to the percentile; failures still get counted
+    in ``failed`` so the chart can mark gaps.
+    """
+    if bucket_size_s <= 0:
+        return []
+    buckets: dict[tuple[int, str, str], list[PingResult]] = {}
+    for p in pings:
+        idx = int((p.ts - window_start).total_seconds() // bucket_size_s)
+        buckets.setdefault((idx, p.target, p.kind), []).append(p)
+    out: list[LatencyBucket] = []
+    delta = timedelta(seconds=bucket_size_s)
+    for (idx, target, kind), items in buckets.items():
+        ts = window_start + delta * idx
+        latencies = sorted(
+            p.latency_ms for p in items
+            if p.success and p.latency_ms is not None
+        )
+        failed = sum(1 for p in items if not p.success)
+        out.append(
+            LatencyBucket(
+                ts=ts,
+                target=target,
+                label=items[0].label,
+                kind=kind,
+                samples=len(items),
+                failed=failed,
+                p50_ms=_pct(latencies, 50) if latencies else None,
+                p95_ms=_pct(latencies, 95) if latencies else None,
+            )
+        )
+    out.sort(key=lambda b: (b.target, b.kind, b.ts))
+    return out
+
+
 def _pct(sorted_values: list[float], pct: int) -> float:
     if not sorted_values:
         raise ValueError("empty")
@@ -425,6 +496,7 @@ __all__ = [
     "Bucket",
     "CalendarRow",
     "HourSummary",
+    "LatencyBucket",
     "LatencyStats",
     "Outage",
     "PathChange",
@@ -435,8 +507,10 @@ __all__ = [
     "SEVERITY_NO_DATA",
     "SEVERITY_SEVERE",
     "bucket_outages",
+    "bucket_size_for_window",
     "buffer_bloat_score",
     "detect_outages",
+    "downsample_latency",
     "floor_to_hour",
     "latency_stats",
     "mtr_path_changes",

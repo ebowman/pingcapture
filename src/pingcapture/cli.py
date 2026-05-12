@@ -103,6 +103,9 @@ async def _run(
 
     log.info("pingcapture %s starting (db=%s)", __version__, cfg.db_path)
     log.info("console at http://%s:%d", cfg.web_host, cfg.web_port)
+    backfilled = store.backfill_hourly_buckets()
+    if backfilled:
+        log.info("backfilled %d hourly bucket rows", backfilled)
     try:
         await asyncio.gather(
             run_pinger(cfg, store, stop),

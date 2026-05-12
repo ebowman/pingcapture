@@ -11,10 +11,18 @@ import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+_ONE_HOUR = timedelta(hours=1)
+
+
+def _floor_hour(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,15 @@ CREATE TABLE IF NOT EXISTS mtr_hops (
     stddev_ms   REAL,
     PRIMARY KEY (run_id, hop_idx)
 );
+
+CREATE TABLE IF NOT EXISTS hourly_buckets (
+    hour_start       TEXT    PRIMARY KEY,  -- ISO UTC, minute=second=0
+    samples          INTEGER NOT NULL,
+    failed           INTEGER NOT NULL,
+    longest_outage_s REAL    NOT NULL,
+    outage_count     INTEGER NOT NULL,
+    severity         TEXT    NOT NULL
+);
 """
 
 
@@ -125,10 +142,30 @@ class Store:
         if version == 0:
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        elif version != SCHEMA_VERSION:
-            # Future: migrations from `version` -> SCHEMA_VERSION go here.
+            return
+        # Step-ladder migrations. Each step bumps user_version by 1.
+        while version < SCHEMA_VERSION:
+            if version == 1:
+                # v1 -> v2: add hourly_buckets materialization table.
+                self._conn.executescript(
+                    "CREATE TABLE IF NOT EXISTS hourly_buckets ("
+                    "  hour_start       TEXT    PRIMARY KEY,"
+                    "  samples          INTEGER NOT NULL,"
+                    "  failed           INTEGER NOT NULL,"
+                    "  longest_outage_s REAL    NOT NULL,"
+                    "  outage_count     INTEGER NOT NULL,"
+                    "  severity         TEXT    NOT NULL"
+                    ");"
+                )
+                version = 2
+            else:
+                raise RuntimeError(
+                    f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
+                )
+            self._conn.execute(f"PRAGMA user_version = {version}")
+        if version > SCHEMA_VERSION:
             raise RuntimeError(
-                f"DB schema version {version} not supported by code version {SCHEMA_VERSION}"
+                f"DB schema v{version} is newer than code v{SCHEMA_VERSION}"
             )
 
     def close(self) -> None:
@@ -156,6 +193,7 @@ class Store:
                 r.error,
             ),
         )
+        self._recompute_hour(_floor_hour(r.ts))
 
     def insert_mtr_run(self, run: MtrRun) -> int:
         cur = self._conn.execute(
@@ -271,6 +309,7 @@ class Store:
         return out
 
     def insert_pings_bulk(self, results: Iterable[PingResult]) -> None:
+        materialized = list(results)
         self._conn.executemany(
             "INSERT INTO ping_results (ts, target, label, kind, success, latency_ms, error)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -284,9 +323,114 @@ class Store:
                     r.latency_ms,
                     r.error,
                 )
-                for r in results
+                for r in materialized
             ],
         )
+        for hour in {_floor_hour(r.ts) for r in materialized}:
+            self._recompute_hour(hour)
+
+    # --- hourly bucket maintenance ---
+
+    def _recompute_hour(self, hour_start: datetime) -> None:
+        """Recompute the materialized row for ``hour_start`` from raw pings.
+
+        Imported lazily to avoid a storage <-> analytics import cycle.
+        """
+        from .analytics import bucket_outages  # local import; cycle guard
+
+        hour_end = hour_start + _ONE_HOUR
+        rows = self._conn.execute(
+            "SELECT ts, target, label, kind, success, latency_ms, error"
+            " FROM ping_results WHERE ts >= ? AND ts < ?",
+            (_to_iso(hour_start), _to_iso(hour_end)),
+        )
+        pings = [
+            PingResult(
+                ts=_from_iso(r["ts"]),
+                target=r["target"],
+                label=r["label"],
+                kind=r["kind"],
+                success=bool(r["success"]),
+                latency_ms=r["latency_ms"],
+                error=r["error"],
+            )
+            for r in rows
+        ]
+        buckets = bucket_outages(
+            pings, window_start=hour_start, window_end=hour_end, bucket_size_s=3600.0
+        )
+        if not buckets:
+            return
+        b = buckets[0]
+        self._conn.execute(
+            "INSERT INTO hourly_buckets (hour_start, samples, failed,"
+            " longest_outage_s, outage_count, severity)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(hour_start) DO UPDATE SET"
+            "  samples=excluded.samples, failed=excluded.failed,"
+            "  longest_outage_s=excluded.longest_outage_s,"
+            "  outage_count=excluded.outage_count, severity=excluded.severity",
+            (
+                _to_iso(hour_start),
+                b.samples,
+                b.failed,
+                b.longest_outage_s,
+                b.outage_count,
+                b.severity,
+            ),
+        )
+
+    def backfill_hourly_buckets(self) -> int:
+        """Compute hourly_buckets rows for every hour with raw data that lacks one.
+
+        Returns the number of hours recomputed. Safe to call repeatedly — it
+        only touches hours that are missing or stale relative to ping_results.
+        """
+        bounds = self._conn.execute(
+            "SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM ping_results"
+        ).fetchone()
+        if bounds is None or bounds["lo"] is None:
+            return 0
+        lo = _floor_hour(_from_iso(bounds["lo"]))
+        hi = _floor_hour(_from_iso(bounds["hi"]))
+        present = {
+            row["hour_start"]
+            for row in self._conn.execute(
+                "SELECT hour_start FROM hourly_buckets"
+                " WHERE hour_start >= ? AND hour_start <= ?",
+                (_to_iso(lo), _to_iso(hi)),
+            )
+        }
+        count = 0
+        cur = lo
+        while cur <= hi:
+            if _to_iso(cur) not in present:
+                self._recompute_hour(cur)
+                count += 1
+            cur = cur + _ONE_HOUR
+        return count
+
+    def hourly_buckets_between(
+        self, start: datetime, end: datetime
+    ) -> list[tuple[datetime, int, int, float, int, str]]:
+        """Read materialized hourly buckets in [start, end). Aligned hours only."""
+        rows = self._conn.execute(
+            "SELECT hour_start, samples, failed, longest_outage_s, outage_count, severity"
+            " FROM hourly_buckets WHERE hour_start >= ? AND hour_start < ?"
+            " ORDER BY hour_start",
+            (_to_iso(start), _to_iso(end)),
+        )
+        return [
+            (
+                _from_iso(r["hour_start"]),
+                r["samples"],
+                r["failed"],
+                r["longest_outage_s"],
+                r["outage_count"],
+                r["severity"],
+            )
+            for r in rows
+        ]
 
 
 @contextmanager

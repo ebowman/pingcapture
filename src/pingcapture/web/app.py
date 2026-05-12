@@ -11,8 +11,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from .. import __version__
 from ..analytics import (
     bucket_outages,
+    bucket_size_for_window,
     buffer_bloat_score,
     detect_outages,
+    downsample_latency,
     floor_to_hour,
     latency_stats,
     mtr_path_changes,
@@ -150,21 +152,45 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/timeseries")
     def api_timeseries(hours: float = 24.0, kind: str | None = None) -> JSONResponse:
         start, end = window(_now(), hours=hours)
+        bucket_s = bucket_size_for_window(hours)
         with _store() as store:
             pings = store.pings_between(start, end, kind=kind)
+        if bucket_s == 0:
+            return JSONResponse(
+                {
+                    "bucket_s": 0,
+                    "points": [
+                        {
+                            "ts": p.ts.isoformat(),
+                            "target": p.target,
+                            "label": p.label,
+                            "kind": p.kind,
+                            "success": p.success,
+                            "latency_ms": p.latency_ms,
+                        }
+                        for p in pings
+                    ],
+                }
+            )
+        series = downsample_latency(
+            pings, window_start=start, bucket_size_s=bucket_s
+        )
         return JSONResponse(
             {
-                "points": [
+                "bucket_s": bucket_s,
+                "series": [
                     {
-                        "ts": p.ts.isoformat(),
-                        "target": p.target,
-                        "label": p.label,
-                        "kind": p.kind,
-                        "success": p.success,
-                        "latency_ms": p.latency_ms,
+                        "ts": b.ts.isoformat(),
+                        "target": b.target,
+                        "label": b.label,
+                        "kind": b.kind,
+                        "samples": b.samples,
+                        "failed": b.failed,
+                        "p50_ms": b.p50_ms,
+                        "p95_ms": b.p95_ms,
                     }
-                    for p in pings
-                ]
+                    for b in series
+                ],
             }
         )
 
@@ -175,14 +201,18 @@ def create_app(cfg: Config) -> FastAPI:
         now = _now()
         end = floor_to_hour(now) + timedelta(hours=1)
         start = floor_to_hour(end - timedelta(days=days))
-        with _store() as store:
-            pings = store.pings_between(start, end)
-        buckets = bucket_outages(
-            pings,
-            window_start=start,
-            window_end=end,
-            bucket_size_s=bucket_hours * 3600.0,
-        )
+        if bucket_hours == 1.0:
+            buckets = _buckets_from_materialized(start, end)
+        else:
+            # Non-hourly buckets are a legacy code path; recompute from raw.
+            with _store() as store:
+                pings = store.pings_between(start, end)
+            buckets = bucket_outages(
+                pings,
+                window_start=start,
+                window_end=end,
+                bucket_size_s=bucket_hours * 3600.0,
+            )
         return JSONResponse(
             {
                 "window_start": start.isoformat(),
@@ -203,6 +233,41 @@ def create_app(cfg: Config) -> FastAPI:
                 ],
             }
         )
+
+    def _buckets_from_materialized(
+        start: datetime, end: datetime
+    ) -> list:
+        from ..analytics import Bucket, SEVERITY_NO_DATA
+
+        with _store() as store:
+            rows = store.hourly_buckets_between(start, end)
+        by_hour = {row[0]: row for row in rows}
+        out: list[Bucket] = []
+        cur = start
+        one_hour = timedelta(hours=1)
+        while cur < end:
+            row = by_hour.get(cur)
+            if row is None:
+                out.append(
+                    Bucket(
+                        start=cur, end=cur + one_hour,
+                        samples=0, failed=0,
+                        longest_outage_s=0.0, outage_count=0,
+                        severity=SEVERITY_NO_DATA,
+                    )
+                )
+            else:
+                _, samples, failed, longest, oc, sev = row
+                out.append(
+                    Bucket(
+                        start=cur, end=cur + one_hour,
+                        samples=samples, failed=failed,
+                        longest_outage_s=longest, outage_count=oc,
+                        severity=sev,
+                    )
+                )
+            cur += one_hour
+        return out
 
     @app.get("/api/recent")
     def api_recent(limit: int = 50) -> JSONResponse:

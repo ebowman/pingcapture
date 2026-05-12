@@ -112,3 +112,27 @@ def test_buckets_endpoint(tmp_db, now) -> None:
     assert "buckets" in body
     assert body["bucket_hours"] == 1.0
     assert all("severity" in b for b in body["buckets"])
+
+
+def test_timeseries_raw_under_one_hour(tmp_db) -> None:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/api/timeseries?hours=1")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bucket_s"] == 0
+    assert "points" in body
+    assert "series" not in body
+
+
+def test_timeseries_downsampled_above_one_hour(tmp_db) -> None:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    client = TestClient(create_app(cfg))
+    r = client.get("/api/timeseries?hours=24")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bucket_s"] == 120
+    assert "series" in body
+    assert "points" not in body

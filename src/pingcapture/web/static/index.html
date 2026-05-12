@@ -460,15 +460,15 @@ function renderRecent(r) {
   `).join("");
 }
 
-function renderChart(ts) {
+function datasetsFromPoints(points) {
   const byTarget = new Map();
-  for (const p of ts.points) {
+  for (const p of points) {
     if (!p.success || p.latency_ms == null) continue;
     const k = `${p.label} (${p.kind})`;
     if (!byTarget.has(k)) byTarget.set(k, []);
     byTarget.get(k).push({ x: new Date(p.ts), y: p.latency_ms });
   }
-  const datasets = [...byTarget.entries()].map(([label, data], i) => ({
+  return [...byTarget.entries()].map(([label, data], i) => ({
     label,
     data,
     parsing: false,
@@ -479,6 +479,53 @@ function renderChart(ts) {
     pointHoverRadius: 3,
     tension: 0.2,
   }));
+}
+
+function datasetsFromSeries(series) {
+  // Each (target, kind) becomes two datasets — a p95 line (faint, no border,
+  // filling DOWN to its paired p50 line) and a p50 line drawn on top. Chart.js
+  // requires the fill-target dataset to be at the right index relative to
+  // ourselves, so we lay them out as: [p50_a, p95_a, p50_b, p95_b, ...] and
+  // tell each p95 to fill to the previous dataset (its p50).
+  const byTarget = new Map();
+  for (const b of series) {
+    if (b.p50_ms == null && b.p95_ms == null) continue;
+    const k = `${b.label} (${b.kind})`;
+    if (!byTarget.has(k)) byTarget.set(k, { p50: [], p95: [] });
+    const ts = new Date(b.ts);
+    if (b.p50_ms != null) byTarget.get(k).p50.push({ x: ts, y: b.p50_ms });
+    if (b.p95_ms != null) byTarget.get(k).p95.push({ x: ts, y: b.p95_ms });
+  }
+  const out = [];
+  let i = 0;
+  for (const [label, { p50, p95 }] of byTarget) {
+    const color = colorFor(label, i++);
+    out.push({
+      label, data: p50, parsing: false,
+      borderColor: color, backgroundColor: color,
+      borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 3, tension: 0.2,
+    });
+    out.push({
+      label: `${label} p95`, data: p95, parsing: false,
+      borderColor: "transparent",
+      backgroundColor: color + "26",  // ~15% alpha
+      borderWidth: 0, pointRadius: 0,
+      fill: "-1",  // fill down to the previous dataset (the p50 line)
+      tension: 0.2,
+      // Hide from the legend so we don't double-count.
+      legend: { display: false },
+    });
+  }
+  return out;
+}
+
+function renderChart(ts) {
+  let datasets;
+  if (ts.bucket_s && ts.bucket_s > 0) {
+    datasets = datasetsFromSeries(ts.series);
+  } else {
+    datasets = datasetsFromPoints(ts.points);
+  }
   const ctx = document.getElementById("latency-chart");
   if (chart) {
     chart.data.datasets = datasets;
@@ -500,7 +547,13 @@ function renderChart(ts) {
              ticks: { color: "#8b949e", callback: v => v + " ms" } },
       },
       plugins: {
-        legend: { labels: { color: "#e6edf3", boxWidth: 12 } },
+        legend: {
+          labels: {
+            color: "#e6edf3", boxWidth: 12,
+            // Hide the auxiliary "<target> p95" datasets from the legend.
+            filter: (item) => !item.text.endsWith(" p95"),
+          },
+        },
         tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(1)} ms` } },
       },
     },

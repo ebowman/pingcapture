@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from pingcapture.analytics import (
+    bucket_size_for_window,
     buffer_bloat_score,
     detect_outages,
+    downsample_latency,
     latency_stats,
     mtr_path_changes,
     uptime_pct,
@@ -143,3 +145,48 @@ def test_buffer_bloat_score(now: datetime) -> None:
     score = buffer_bloat_score(pings)
     assert score is not None
     assert score > 50  # high variance
+
+
+def test_bucket_size_for_window() -> None:
+    assert bucket_size_for_window(0.5) == 0
+    assert bucket_size_for_window(1.0) == 0
+    assert bucket_size_for_window(6.0) == 30
+    assert bucket_size_for_window(24.0) == 120
+    assert bucket_size_for_window(168.0) == 900
+
+
+def test_downsample_latency_groups_by_target(now: datetime) -> None:
+    # 60s of pings, 30s buckets => 2 buckets per target.
+    pings = []
+    for i in range(60):
+        pings.append(mk_ping(ts=now + timedelta(seconds=i),
+                             target="a", label="A", latency_ms=10.0 + i))
+        pings.append(mk_ping(ts=now + timedelta(seconds=i),
+                             target="b", label="B", latency_ms=20.0))
+    out = downsample_latency(pings, window_start=now, bucket_size_s=30)
+    assert len(out) == 4  # 2 targets x 2 buckets
+    a_buckets = [b for b in out if b.target == "a"]
+    assert len(a_buckets) == 2
+    assert a_buckets[0].samples == 30
+    # p50 of latencies 10..39 is between 24 and 25
+    assert 24.0 <= a_buckets[0].p50_ms <= 25.0
+    b_buckets = [b for b in out if b.target == "b"]
+    assert b_buckets[0].p50_ms == 20.0
+
+
+def test_downsample_latency_counts_failures(now: datetime) -> None:
+    pings = [
+        mk_ping(ts=now, success=True, latency_ms=10.0),
+        mk_ping(ts=now + timedelta(seconds=10), success=False, error="x"),
+        mk_ping(ts=now + timedelta(seconds=20), success=True, latency_ms=12.0),
+    ]
+    out = downsample_latency(pings, window_start=now, bucket_size_s=60)
+    assert len(out) == 1
+    assert out[0].samples == 3
+    assert out[0].failed == 1
+    assert out[0].p50_ms == 11.0
+
+
+def test_downsample_latency_zero_bucket_returns_empty(now: datetime) -> None:
+    pings = [mk_ping(ts=now, latency_ms=10.0)]
+    assert downsample_latency(pings, window_start=now, bucket_size_s=0) == []
