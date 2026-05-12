@@ -44,7 +44,12 @@ def create_app(cfg: Config) -> FastAPI:
     def index() -> HTMLResponse:
         if not STATIC_INDEX.exists():
             raise HTTPException(500, "static index missing")
-        return HTMLResponse(STATIC_INDEX.read_text(encoding="utf-8"))
+        # Console JS changes ship via plain git pull; don't let browsers cache
+        # the page so reloads pick up new dashboards without a hard-refresh.
+        return HTMLResponse(
+            STATIC_INDEX.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/report", response_class=HTMLResponse)
     def report_page(

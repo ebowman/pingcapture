@@ -527,6 +527,9 @@ function renderChart(ts) {
   } else {
     datasets = datasetsFromPoints(ts.points);
   }
+  const now = Date.now();
+  const xMin = now - currentWindow * 3600 * 1000;
+  const xMax = now;
   const ctx = document.getElementById("latency-chart");
   // Tear down when the window changes: dataset shape (raw vs p50+p95) and
   // x-axis bounds both depend on it, and chart.update("none") preserves
@@ -537,6 +540,8 @@ function renderChart(ts) {
   }
   if (chart) {
     chart.data.datasets = datasets;
+    chart.options.scales.x.min = xMin;
+    chart.options.scales.x.max = xMax;
     chart.update("none");
     return;
   }
@@ -551,7 +556,8 @@ function renderChart(ts) {
       interaction: { mode: "nearest", intersect: false },
       scales: {
         x: { type: "time", grid: { color: "#222831" },
-             ticks: { color: "#8b949e" } },
+             ticks: { color: "#8b949e" },
+             min: xMin, max: xMax },
         y: { beginAtZero: true, grid: { color: "#222831" },
              ticks: { color: "#8b949e", callback: v => v + " ms" } },
       },
