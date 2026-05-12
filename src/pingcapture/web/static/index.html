@@ -274,6 +274,7 @@ const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:
 let currentWindow = 24;
 let currentGridDays = 30;
 let chart = null;
+let chartWindow = null;  // window the current chart's axis was built for
 
 const palette = [
   "#58a6ff", "#3fb950", "#d29922", "#f85149",
@@ -527,11 +528,19 @@ function renderChart(ts) {
     datasets = datasetsFromPoints(ts.points);
   }
   const ctx = document.getElementById("latency-chart");
+  // Tear down when the window changes: dataset shape (raw vs p50+p95) and
+  // x-axis bounds both depend on it, and chart.update("none") preserves
+  // the old scales.
+  if (chart && chartWindow !== currentWindow) {
+    chart.destroy();
+    chart = null;
+  }
   if (chart) {
     chart.data.datasets = datasets;
     chart.update("none");
     return;
   }
+  chartWindow = currentWindow;
   chart = new Chart(ctx, {
     type: "line",
     data: { datasets },
