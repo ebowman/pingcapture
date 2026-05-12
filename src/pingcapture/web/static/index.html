@@ -108,6 +108,7 @@
   }
   .grid-cell:hover { transform: scaleY(1.12); outline-color: var(--accent); }
   .grid-cell.sev-none    { background: #2ea043; }
+  .grid-cell.sev-nominal { background: #8fb821; }
   .grid-cell.sev-flicker { background: #d4a72c; }
   .grid-cell.sev-minor   { background: #db8c2a; }
   .grid-cell.sev-major   { background: #e5534b; }
@@ -174,6 +175,7 @@
     </div>
     <div class="legend">
       <span><i class="legend-swatch" style="background:#2ea043;"></i>up</span>
+      <span><i class="legend-swatch" style="background:#8fb821;"></i>minor loss (≥99% up)</span>
       <span><i class="legend-swatch" style="background:#d4a72c;"></i>flicker (≤5 s)</span>
       <span><i class="legend-swatch" style="background:#db8c2a;"></i>&gt; 15 s</span>
       <span><i class="legend-swatch" style="background:#e5534b;"></i>&gt; 30 s</span>
@@ -376,6 +378,7 @@ function fmtHourLocal(iso) {
 
 const sevLabel = {
   none: "Up — no failed probes",
+  nominal: "Minor loss — scattered drops, ≥99% uptime",
   flicker: "Flicker — failures, no outage > 5 s",
   minor: "Minor outage — > 15 s",
   major: "Major outage — > 30 s",

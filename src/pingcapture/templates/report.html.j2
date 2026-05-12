@@ -26,6 +26,7 @@
   }
   .cal-cell { height: 14px; border-radius: 1px; }
   .cal-cell.sev-none    { background: #2ea043; }
+  .cal-cell.sev-nominal { background: #8fb821; }
   .cal-cell.sev-flicker { background: #d4a72c; }
   .cal-cell.sev-minor   { background: #db8c2a; }
   .cal-cell.sev-major   { background: #e5534b; }
@@ -50,6 +51,7 @@
     font-variant-numeric: tabular-nums;
   }
   .hod-cell.sev-none    { background: #2ea043; }
+  .hod-cell.sev-nominal { background: #8fb821; }
   .hod-cell.sev-flicker { background: #d4a72c; }
   .hod-cell.sev-minor   { background: #db8c2a; }
   .hod-cell.sev-major   { background: #e5534b; color: rgba(255,255,255,0.85); }
@@ -60,6 +62,7 @@
   .legend-swatch { display: inline-block; width: 0.7rem; height: 0.7rem;
                    border-radius: 1.5px; margin-right: 0.3rem; vertical-align: middle; }
   .legend-swatch.sev-none    { background: #2ea043; }
+  .legend-swatch.sev-nominal { background: #8fb821; }
   .legend-swatch.sev-flicker { background: #d4a72c; }
   .legend-swatch.sev-minor   { background: #db8c2a; }
   .legend-swatch.sev-major   { background: #e5534b; }
@@ -171,6 +174,7 @@
 
 <div class="legend">
   <span><i class="legend-swatch sev-none"></i>{{ t.t("grid_legend_none") }}</span>
+  <span><i class="legend-swatch sev-nominal"></i>{{ t.t("grid_legend_nominal") }}</span>
   <span><i class="legend-swatch sev-flicker"></i>{{ t.t("grid_legend_flicker") }}</span>
   <span><i class="legend-swatch sev-minor"></i>{{ t.t("grid_legend_minor") }}</span>
   <span><i class="legend-swatch sev-major"></i>{{ t.t("grid_legend_major") }}</span>

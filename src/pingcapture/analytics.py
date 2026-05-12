@@ -305,12 +305,18 @@ def window(now: datetime, *, hours: float | None = None, days: float | None = No
 
 # Severity thresholds for the status grid. Each bucket gets the level whose
 # threshold its longest outage exceeds. None means no failed probes at all.
-SEVERITY_NONE = "none"        # green
-SEVERITY_FLICKER = "flicker"  # yellow — failed probes but no outage > 5s
-SEVERITY_MINOR = "minor"      # orange — > 15s
-SEVERITY_MAJOR = "major"      # red — > 30s
-SEVERITY_SEVERE = "severe"    # dark red — >= 5min
-SEVERITY_NO_DATA = "no_data"  # grey
+SEVERITY_NONE = "none"          # green — zero failures
+SEVERITY_NOMINAL = "nominal"    # pale yellow-green — scattered loss, >=99% uptime, no >5s span
+SEVERITY_FLICKER = "flicker"    # yellow — noticeable loss (<99% uptime) or 5-15s span
+SEVERITY_MINOR = "minor"        # orange — > 15s outage
+SEVERITY_MAJOR = "major"        # red — > 30s outage
+SEVERITY_SEVERE = "severe"      # dark red — >= 5min outage
+SEVERITY_NO_DATA = "no_data"    # grey
+
+# Hours with this much loss or more — but no outage span — promote from
+# NOMINAL to FLICKER. 1% loss in a 700-probe hour is ~7 dropped probes;
+# any more than that pulls the eye in the grid.
+NOMINAL_UPTIME_FLOOR = 99.0
 
 
 @dataclass(frozen=True)
@@ -343,8 +349,11 @@ def _severity_for(longest_s: float, failed: int, samples: int) -> str:
         return SEVERITY_MINOR
     if longest_s > 5:
         return SEVERITY_FLICKER
-    # Failures present but no outage met the 5s threshold — single dropped
-    # probes scattered across rotation slots. Still call it a flicker.
+    # No outage span >5s. Distinguish "trickle" (mostly clean, a few drops)
+    # from "noticeable loss" so the eye is drawn to hours that actually hurt.
+    uptime = 100.0 * (samples - failed) / samples
+    if uptime >= NOMINAL_UPTIME_FLOOR:
+        return SEVERITY_NOMINAL
     return SEVERITY_FLICKER
 
 
@@ -455,10 +464,11 @@ def pivot_buckets_by_day(buckets: list[Bucket]) -> list[CalendarRow]:
 _SEVERITY_RANK = {
     SEVERITY_NO_DATA: -1,  # don't let absent data dominate the aggregate
     SEVERITY_NONE: 0,
-    SEVERITY_FLICKER: 1,
-    SEVERITY_MINOR: 2,
-    SEVERITY_MAJOR: 3,
-    SEVERITY_SEVERE: 4,
+    SEVERITY_NOMINAL: 1,
+    SEVERITY_FLICKER: 2,
+    SEVERITY_MINOR: 3,
+    SEVERITY_MAJOR: 4,
+    SEVERITY_SEVERE: 5,
 }
 
 
@@ -515,6 +525,7 @@ __all__ = [
     "SEVERITY_FLICKER",
     "SEVERITY_MAJOR",
     "SEVERITY_MINOR",
+    "SEVERITY_NOMINAL",
     "SEVERITY_NONE",
     "SEVERITY_NO_DATA",
     "SEVERITY_SEVERE",

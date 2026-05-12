@@ -9,6 +9,7 @@ from pingcapture.analytics import (
     SEVERITY_MAJOR,
     SEVERITY_MINOR,
     SEVERITY_NO_DATA,
+    SEVERITY_NOMINAL,
     SEVERITY_NONE,
     SEVERITY_SEVERE,
     bucket_outages,
@@ -79,7 +80,7 @@ def test_classification_thresholds() -> None:
 
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
     assert [b.severity for b in buckets] == [
-        SEVERITY_FLICKER,   # 1 fail, no outage detected, but failed probes present
+        SEVERITY_NOMINAL,   # 1 fail in 720 = 99.86% uptime, no outage span
         SEVERITY_MINOR,
         SEVERITY_MAJOR,
         SEVERITY_SEVERE,
@@ -88,6 +89,38 @@ def test_classification_thresholds() -> None:
     assert buckets[1].outage_count == 1
     assert buckets[2].longest_outage_s == 35.0
     assert buckets[3].longest_outage_s == 310.0
+
+
+def test_nominal_below_one_percent_loss() -> None:
+    """Up to 1% loss with no outage span >5s should be 'nominal', not flicker."""
+    start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    pings = []
+    # 720 probes, 5 scattered failures = 715/720 = 99.31% uptime.
+    fail_indices = {37, 199, 320, 521, 688}
+    for i in range(720):
+        ok = i not in fail_indices
+        pings.append(_mk(ts=start + timedelta(seconds=i * 5), success=ok, i=i))
+    buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
+    assert buckets[0].severity == SEVERITY_NOMINAL
+    assert buckets[0].failed == 5
+    assert buckets[0].longest_outage_s == 0.0
+
+
+def test_flicker_when_loss_exceeds_one_percent() -> None:
+    """More than ~1% loss (and no outage span) should still be flicker."""
+    start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    pings = []
+    # 720 probes, 10 scattered failures = 710/720 = 98.61% uptime.
+    fail_step = 72
+    for i in range(720):
+        ok = i % fail_step != 0
+        pings.append(_mk(ts=start + timedelta(seconds=i * 5), success=ok, i=i))
+    buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
+    assert buckets[0].severity == SEVERITY_FLICKER
+    assert buckets[0].failed == 10
+    assert buckets[0].longest_outage_s == 0.0
 
 
 def test_yellow_for_short_outage() -> None:
