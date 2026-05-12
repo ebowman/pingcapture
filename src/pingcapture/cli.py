@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 from pathlib import Path
 
 import click
@@ -44,6 +45,9 @@ def main(ctx: click.Context, config_path: Path | None, verbose: bool) -> None:
     """pingcapture: continuous DSL reliability monitor."""
     _setup_logging(verbose)
     ctx.obj = Config.load(config_path)
+    # Stash so subcommands can spawn child processes with the same --config.
+    ctx.meta["config_path"] = config_path
+    ctx.meta["verbose"] = verbose
 
 
 @main.command()
@@ -66,13 +70,24 @@ def init() -> None:
 
 
 @main.command()
-@click.pass_obj
-def run(cfg: Config) -> None:
-    """Run the pinger + mtr scheduler in the foreground."""
-    asyncio.run(_run(cfg))
+@click.pass_context
+def run(ctx: click.Context) -> None:
+    """Run the pinger + mtr scheduler, with the web console in a child process.
+
+    The web server runs in a separate process so that heavy HTTP work (large
+    JSON payloads, full-table scans) cannot block this process's asyncio loop.
+    A blocked loop would starve ``icmplib.async_ping``'s socket reader and
+    produce false outages — see pingcapture-vih.
+    """
+    cfg: Config = ctx.obj
+    config_path: Path | None = ctx.meta.get("config_path")
+    verbose: bool = ctx.meta.get("verbose", False)
+    asyncio.run(_run(cfg, config_path=config_path, verbose=verbose))
 
 
-async def _run(cfg: Config) -> None:
+async def _run(
+    cfg: Config, *, config_path: Path | None, verbose: bool
+) -> None:
     log = logging.getLogger("pingcapture")
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
     store = Store(cfg.db_path)
@@ -86,37 +101,69 @@ async def _run(cfg: Config) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal, sig)
 
-    app = create_app(cfg)
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=cfg.web_host,
-            port=cfg.web_port,
-            log_level="warning",
-            lifespan="on",
-        )
-    )
-    # uvicorn installs its own signal handlers when run via Server.serve();
-    # we want our handler to drive shutdown, so disable uvicorn's.
-    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
-
-    async def _serve_until_stop() -> None:
-        serve_task = asyncio.create_task(server.serve())
-        await stop.wait()
-        server.should_exit = True
-        await serve_task
-
     log.info("pingcapture %s starting (db=%s)", __version__, cfg.db_path)
     log.info("console at http://%s:%d", cfg.web_host, cfg.web_port)
     try:
         await asyncio.gather(
             run_pinger(cfg, store, stop),
             run_mtr_scheduler(cfg, store, stop),
-            _serve_until_stop(),
+            _supervise_console(stop, config_path=config_path, verbose=verbose),
         )
     finally:
         store.close()
         log.info("pingcapture stopped")
+
+
+async def _supervise_console(
+    stop: asyncio.Event, *, config_path: Path | None, verbose: bool
+) -> None:
+    """Run ``pingcapture console`` as a child process and keep it alive.
+
+    Stdout/stderr are inherited so launchd's log files capture both processes.
+    On exit, the child is sent SIGTERM and given a few seconds to drain.
+    """
+    log = logging.getLogger("pingcapture.console")
+    cmd = [sys.executable, "-m", "pingcapture.cli"]
+    if verbose:
+        cmd.append("-v")
+    if config_path is not None:
+        cmd.extend(["--config", str(config_path)])
+    cmd.append("console")
+
+    backoff_s = 1.0
+    while not stop.is_set():
+        log.info("starting web console child: %s", " ".join(cmd))
+        proc = await asyncio.create_subprocess_exec(*cmd)
+        # Wait for either the child to exit or the stop event.
+        wait_child = asyncio.create_task(proc.wait())
+        wait_stop = asyncio.create_task(stop.wait())
+        done, _ = await asyncio.wait(
+            {wait_child, wait_stop}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if wait_stop in done:
+            wait_child.cancel()
+            log.info("stopping web console child (pid=%d)", proc.pid)
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except TimeoutError:
+                log.warning("web console did not exit in 5s, killing")
+                proc.kill()
+                await proc.wait()
+            return
+        # Child exited on its own — restart with bounded backoff.
+        wait_stop.cancel()
+        rc = proc.returncode
+        log.warning("web console exited rc=%s, restarting in %.1fs", rc, backoff_s)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=backoff_s)
+            return  # stop was set during the backoff
+        except TimeoutError:
+            pass
+        backoff_s = min(backoff_s * 2, 30.0)
 
 
 @main.command()
