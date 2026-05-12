@@ -265,6 +265,10 @@
   </table>
 {% endif %}
 
-<footer>{{ t.t("footer", version=version) }}</footer>
+<footer>
+  {{ t.t("footer", version=version) }}
+  <br>
+  {{ t.t("footer_source") }}: <a href="{{ repo_url }}">{{ repo_url }}</a>
+</footer>
 </body>
 </html>

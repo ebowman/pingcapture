@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 
-from . import __version__
+from . import __repo_url__, __version__
 from .analytics import (
     Outage,
     PathChange,
@@ -119,6 +119,7 @@ def render_report(
         "t": t,
         "owner": inputs.owner or getpass.getuser(),
         "version": __version__,
+        "repo_url": __repo_url__,
         "start_str": _fmt_ts(inputs.start),
         "end_str": _fmt_ts(inputs.end),
         "duration_str": _format_duration(t, (inputs.end - inputs.start).total_seconds()),

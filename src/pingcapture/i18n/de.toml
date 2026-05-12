@@ -56,6 +56,7 @@ paths_col_hop = "Hop"
 paths_col_change = "IP-Wechsel"
 
 footer = "Erstellt mit pingcapture v{version}. Die Rohdaten werden lokal in SQLite gespeichert."
+footer_source = "Quellcode"
 
 unit_seconds = "{n:.1f} s"
 unit_minutes = "{n:.1f} min"
