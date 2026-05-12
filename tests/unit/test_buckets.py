@@ -24,6 +24,13 @@ def _hour(start: datetime, idx: int) -> datetime:
     return start + timedelta(hours=idx)
 
 
+def _mk(*, ts: datetime, success: bool, i: int, **kw):
+    """Like mk_ping but alternates icmp/tcp by index, so failure streaks
+    inevitably contain a TCP failure (required by detect_outages)."""
+    kind = "icmp" if i % 2 == 0 else "tcp"
+    return mk_ping(ts=ts, success=success, kind=kind, **kw)
+
+
 def test_no_data_bucket_is_grey() -> None:
     start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
     end = start + timedelta(hours=2)
@@ -60,7 +67,7 @@ def test_classification_thresholds() -> None:
         for i in range(720):
             ts = h_start + timedelta(seconds=i * 5)
             ok = not (10 <= i < 10 + n_fail)
-            pings.append(mk_ping(ts=ts, success=ok))
+            pings.append(_mk(ts=ts, success=ok, i=i))
 
     # N consecutive failed probes at 5s spacing span N*5 seconds
     # (outage ends at the next successful probe, 5s after the last fail).
@@ -91,7 +98,7 @@ def test_yellow_for_short_outage() -> None:
     pings = []
     for i in range(720):
         ok = not (100 <= i < 103)  # 3 fails → 15s outage (boundary case)
-        pings.append(mk_ping(ts=start + timedelta(seconds=i * 5), success=ok))
+        pings.append(_mk(ts=start + timedelta(seconds=i * 5), success=ok, i=i))
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
     assert buckets[0].severity == SEVERITY_FLICKER
     assert buckets[0].longest_outage_s == 15.0
@@ -185,9 +192,9 @@ def test_hour_of_day_aggregates_worst_severity() -> None:
             day0_severe = day_idx == 0 and in_2pm and 0 <= offset_in_hour < 310
             day1_minor = day_idx == 1 and in_2pm and 0 <= offset_in_hour < 20
             if day0_severe or day1_minor:
-                pings.append(mk_ping(ts=ts, success=False))
+                pings.append(_mk(ts=ts, success=False, i=i))
             else:
-                pings.append(mk_ping(ts=ts, success=True))
+                pings.append(_mk(ts=ts, success=True, i=i))
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
     summary = summarize_by_hour_of_day(buckets)
     assert len(summary) == 24

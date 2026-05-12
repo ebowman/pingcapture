@@ -55,10 +55,15 @@ def detect_outages(
 ) -> list[Outage]:
     """Sliding outage detector.
 
-    A failure window starts when ``min_consecutive_failures`` probes in a row
+    A failure streak starts when ``min_consecutive_failures`` probes in a row
     fail (any target, any kind). It ends when a successful probe arrives, OR
     when more than ``gap_tolerance_s`` elapses with no probes (so a system
     sleep doesn't get charged as an outage).
+
+    A streak is reported as an outage only if it contains at least one TCP
+    failure. ICMP-only streaks (typically caused by upstream ICMP rate-limiting
+    or QoS deprioritization while TCP keeps flowing) are *not* outages — they
+    do not represent user-visible connectivity loss. See pingcapture-ht4.
     """
     sorted_pings = sorted(pings, key=lambda p: p.ts)
     if not sorted_pings:
@@ -74,6 +79,13 @@ def detect_outages(
     def _close_outage(end_ts: datetime) -> None:
         nonlocal in_outage, outage_start, outage_failures
         if outage_start is None:
+            return
+        # An ICMP-only failure streak is not a user-visible outage — TCP was
+        # never observed to fail. Drop it without emitting an Outage row.
+        if not any(p.kind == "tcp" for p in outage_failures):
+            in_outage = False
+            outage_start = None
+            outage_failures = []
             return
         targets = sorted({p.target for p in outage_failures})
         outages.append(

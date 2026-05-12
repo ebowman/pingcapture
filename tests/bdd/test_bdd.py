@@ -22,9 +22,9 @@ scenarios(str(FEATURES / "uptime.feature"))
 scenarios(str(FEATURES / "report.feature"))
 
 
-def _ping(ts: datetime, ok: bool) -> PingResult:
+def _ping(ts: datetime, ok: bool, kind: str = "icmp") -> PingResult:
     return PingResult(
-        ts=ts, target="1.1.1.1", label="Cloudflare", kind="icmp",
+        ts=ts, target="1.1.1.1", label="Cloudflare", kind=kind,
         success=ok, latency_ms=10.0 if ok else None, error=None if ok else "fail",
     )
 
@@ -46,8 +46,12 @@ def ctx() -> dict[str, Any]:
 
 @given(parsers.parse('a probe stream "{pattern}" at {step:d}-second intervals'))
 def stream(ctx: dict[str, Any], pattern: str, step: int) -> None:
+    # Alternate icmp/tcp so any failure streak >=2 contains a TCP failure
+    # (required for detect_outages to consider it user-visible).
     for c in pattern:
-        ctx["pings"].append(_ping(ctx["cursor"], c == "O"))
+        idx = len(ctx["pings"])
+        kind = "icmp" if idx % 2 == 0 else "tcp"
+        ctx["pings"].append(_ping(ctx["cursor"], c == "O", kind=kind))
         ctx["cursor"] += timedelta(seconds=step)
 
 

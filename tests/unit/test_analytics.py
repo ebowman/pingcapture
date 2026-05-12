@@ -19,9 +19,16 @@ from ..conftest import mk_ping
 
 
 def _series(now: datetime, pattern: str, *, step_s: int = 5) -> list:
-    """Build a ping series. 'O' = success, '.' = fail."""
+    """Build a ping series. 'O' = success, '.' = fail.
+
+    Probe kinds alternate icmp/tcp/icmp/tcp so that any failure streak >= 2
+    contains both kinds — matching the production rotation and satisfying the
+    detector's TCP-in-streak rule.
+    """
+    kinds = ("icmp", "tcp")
     return [
-        mk_ping(ts=now + timedelta(seconds=i * step_s), success=(c == "O"))
+        mk_ping(ts=now + timedelta(seconds=i * step_s),
+                success=(c == "O"), kind=kinds[i % 2])
         for i, c in enumerate(pattern)
     ]
 
@@ -66,9 +73,9 @@ def test_two_outages_in_one_window(now: datetime) -> None:
 
 def test_long_quiet_gap_does_not_charge_outage(now: datetime, step_seconds) -> None:
     # 3 fails followed by a 5-minute quiet gap — should close on last sample.
-    p1 = mk_ping(ts=now, success=False)
-    p2 = mk_ping(ts=step_seconds(now, 5), success=False)
-    p3 = mk_ping(ts=step_seconds(now, 10), success=False)
+    p1 = mk_ping(ts=now, success=False, kind="icmp")
+    p2 = mk_ping(ts=step_seconds(now, 5), success=False, kind="tcp")
+    p3 = mk_ping(ts=step_seconds(now, 10), success=False, kind="icmp")
     p4 = mk_ping(ts=step_seconds(now, 600), success=True)  # 10 min later
     outages = detect_outages([p1, p2, p3, p4])
     assert len(outages) == 1
@@ -76,14 +83,55 @@ def test_long_quiet_gap_does_not_charge_outage(now: datetime, step_seconds) -> N
 
 
 def test_outage_affected_targets_sorted(now: datetime) -> None:
+    # Mix kinds so the streak contains a TCP failure (required for outage).
     pings = [
-        mk_ping(ts=now, target="9.9.9.9", success=False),
-        mk_ping(ts=now + timedelta(seconds=5), target="1.1.1.1", success=False),
-        mk_ping(ts=now + timedelta(seconds=10), target="8.8.8.8", success=False),
+        mk_ping(ts=now, target="9.9.9.9", success=False, kind="icmp"),
+        mk_ping(ts=now + timedelta(seconds=5), target="1.1.1.1", success=False, kind="tcp"),
+        mk_ping(ts=now + timedelta(seconds=10), target="8.8.8.8", success=False, kind="icmp"),
         mk_ping(ts=now + timedelta(seconds=15), target="1.1.1.1", success=True),
     ]
     outages = detect_outages(pings)
     assert outages[0].affected_targets == ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+
+
+def test_icmp_only_streak_is_not_an_outage(now: datetime) -> None:
+    """Real-world ICMP shaping: 5 ICMP failures, no TCP probe in window."""
+    pings = [
+        mk_ping(ts=now, kind="icmp"),  # success
+        mk_ping(ts=now + timedelta(seconds=5), kind="icmp", success=False),
+        mk_ping(ts=now + timedelta(seconds=10), kind="icmp", success=False),
+        mk_ping(ts=now + timedelta(seconds=15), kind="icmp", success=False),
+        mk_ping(ts=now + timedelta(seconds=20), kind="icmp", success=False),
+        mk_ping(ts=now + timedelta(seconds=25), kind="icmp"),  # success
+    ]
+    assert detect_outages(pings) == []
+
+
+def test_streak_with_one_tcp_failure_is_an_outage(now: datetime) -> None:
+    pings = [
+        mk_ping(ts=now, kind="icmp"),  # success
+        mk_ping(ts=now + timedelta(seconds=5), kind="icmp", success=False),
+        mk_ping(ts=now + timedelta(seconds=10), kind="tcp", success=False),
+        mk_ping(ts=now + timedelta(seconds=15), kind="icmp", success=False),
+        mk_ping(ts=now + timedelta(seconds=20), kind="icmp"),  # success
+    ]
+    outages = detect_outages(pings)
+    assert len(outages) == 1
+    assert outages[0].failed_probes == 3
+
+
+def test_streak_with_only_tcp_failures_is_an_outage(now: datetime) -> None:
+    """TCP-only failure means real services are breaking — still an outage."""
+    pings = [
+        mk_ping(ts=now, kind="tcp"),  # success
+        mk_ping(ts=now + timedelta(seconds=5), kind="tcp", success=False),
+        mk_ping(ts=now + timedelta(seconds=10), kind="tcp", success=False),
+        mk_ping(ts=now + timedelta(seconds=15), kind="tcp", success=False),
+        mk_ping(ts=now + timedelta(seconds=20), kind="tcp"),  # success
+    ]
+    outages = detect_outages(pings)
+    assert len(outages) == 1
+    assert outages[0].failed_probes == 3
 
 
 def test_latency_stats_basic(now: datetime) -> None:
