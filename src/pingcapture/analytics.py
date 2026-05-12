@@ -313,10 +313,15 @@ SEVERITY_MAJOR = "major"        # red — > 30s outage
 SEVERITY_SEVERE = "severe"      # dark red — >= 5min outage
 SEVERITY_NO_DATA = "no_data"    # grey
 
-# Hours with this much loss or more — but no outage span — promote from
-# NOMINAL to FLICKER. 1% loss in a 700-probe hour is ~7 dropped probes;
-# any more than that pulls the eye in the grid.
+# Buckets that mix kinds use this floor: <99% combined uptime tips into
+# FLICKER. 1% loss in a 700-probe hour is ~7 dropped probes; any more than
+# that pulls the eye in the grid.
 NOMINAL_UPTIME_FLOOR = 99.0
+
+# Buckets where TCP never failed are reclassified by ICMP-only uptime with
+# a looser floor — the outage detector has already concluded these aren't
+# user-visible events, so we don't want them to yell.
+ICMP_ONLY_FLICKER_FLOOR = 97.0
 
 
 @dataclass(frozen=True)
@@ -336,7 +341,22 @@ class Bucket:
         return 100.0 * (self.samples - self.failed) / self.samples
 
 
-def _severity_for(longest_s: float, failed: int, samples: int) -> str:
+def _severity_for(
+    longest_s: float,
+    failed: int,
+    samples: int,
+    *,
+    tcp_failed: int = 0,
+    icmp_failed: int | None = None,
+    icmp_samples: int | None = None,
+) -> str:
+    """Classify a bucket. Bigger picture in pingcapture-pyt and pingcapture-ht4.
+
+    TCP is the authoritative signal — TCP failing means user-visible breakage.
+    If TCP never failed in this bucket, we treat any ICMP-only loss as low-key
+    (mostly upstream ICMP shaping, not a real outage). Such buckets are capped
+    at FLICKER severity and use a more permissive uptime floor.
+    """
     if samples == 0:
         return SEVERITY_NO_DATA
     if failed == 0:
@@ -349,8 +369,14 @@ def _severity_for(longest_s: float, failed: int, samples: int) -> str:
         return SEVERITY_MINOR
     if longest_s > 5:
         return SEVERITY_FLICKER
-    # No outage span >5s. Distinguish "trickle" (mostly clean, a few drops)
-    # from "noticeable loss" so the eye is drawn to hours that actually hurt.
+    # No outage span >5s. Look at the loss pattern.
+    if tcp_failed == 0 and icmp_failed and icmp_samples:
+        # ICMP-only loss — most likely upstream shaping. Loose floor and cap.
+        icmp_uptime = 100.0 * (icmp_samples - icmp_failed) / icmp_samples
+        if icmp_uptime >= ICMP_ONLY_FLICKER_FLOOR:
+            return SEVERITY_NOMINAL
+        return SEVERITY_FLICKER
+    # Mixed loss (or TCP failed too). Use combined uptime.
     uptime = 100.0 * (samples - failed) / samples
     if uptime >= NOMINAL_UPTIME_FLOOR:
         return SEVERITY_NOMINAL
@@ -395,6 +421,9 @@ def bucket_outages(
         outages = detect_outages(items)
         longest = max((o.duration_s for o in outages), default=0.0)
         failed = sum(1 for p in items if not p.success)
+        tcp_failed = sum(1 for p in items if p.kind == "tcp" and not p.success)
+        icmp_items = [p for p in items if p.kind == "icmp"]
+        icmp_failed = sum(1 for p in icmp_items if not p.success)
         out.append(
             Bucket(
                 start=b_start,
@@ -403,7 +432,12 @@ def bucket_outages(
                 failed=failed,
                 longest_outage_s=longest,
                 outage_count=len(outages),
-                severity=_severity_for(longest, failed, len(items)),
+                severity=_severity_for(
+                    longest, failed, len(items),
+                    tcp_failed=tcp_failed,
+                    icmp_failed=icmp_failed,
+                    icmp_samples=len(icmp_items),
+                ),
             )
         )
     # Trim the final bucket if its window collapsed to nothing.

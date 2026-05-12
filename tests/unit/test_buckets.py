@@ -107,19 +107,74 @@ def test_nominal_below_one_percent_loss() -> None:
     assert buckets[0].longest_outage_s == 0.0
 
 
-def test_flicker_when_loss_exceeds_one_percent() -> None:
-    """More than ~1% loss (and no outage span) should still be flicker."""
+def test_flicker_when_mixed_loss_exceeds_one_percent() -> None:
+    """Mixed-kind loss exceeding ~1% (and no outage span) should be flicker."""
     start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
     end = start + timedelta(hours=1)
     pings = []
-    # 720 probes, 10 scattered failures = 710/720 = 98.61% uptime.
-    fail_step = 72
+    # 10 evenly-spaced fail indices; shift by 1 so every other one lands on
+    # an odd index (kind=tcp via _mk's alternation), giving both kinds in
+    # the failure set.
+    fail_indices = {i + 1 for i in range(0, 720, 72)}  # {1, 73, 145, ...}
     for i in range(720):
-        ok = i % fail_step != 0
+        ok = i not in fail_indices
         pings.append(_mk(ts=start + timedelta(seconds=i * 5), success=ok, i=i))
+    # Sanity: there's at least one tcp failure (any odd index is tcp).
+    assert any(p.kind == "tcp" and not p.success for p in pings)
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
     assert buckets[0].severity == SEVERITY_FLICKER
     assert buckets[0].failed == 10
+    assert buckets[0].longest_outage_s == 0.0
+
+
+def test_icmp_only_loss_below_3pct_is_nominal() -> None:
+    """ICMP-only loss with 0 TCP failures uses a looser 97% floor."""
+    start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    pings = []
+    # 600 ICMP probes with 12 failures (98% ICMP uptime) + 120 successful TCP.
+    icmp_fail = set(range(0, 600, 50))  # 12 ICMP failures
+    for i in range(720):
+        if i < 600:
+            ok = i not in icmp_fail
+            pings.append(mk_ping(
+                ts=start + timedelta(seconds=i * 5),
+                success=ok, kind="icmp",
+            ))
+        else:
+            pings.append(mk_ping(
+                ts=start + timedelta(seconds=i * 5),
+                success=True, kind="tcp",
+            ))
+    buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
+    # 12/600 = 98% ICMP uptime >= 97% floor -> nominal even though combined
+    # uptime is below 99%.
+    assert buckets[0].severity == SEVERITY_NOMINAL
+    assert buckets[0].failed == 12
+
+
+def test_icmp_only_loss_above_3pct_is_flicker_and_capped() -> None:
+    """Heavy ICMP-only loss (≥3%) flickers, but never escalates above flicker."""
+    start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    pings = []
+    # 600 ICMP probes with 40 scattered failures (93% uptime) + 120 TCP OK.
+    icmp_fail = set(range(0, 600, 15))  # 40 ICMP failures, none consecutive
+    for i in range(720):
+        if i < 600:
+            ok = i not in icmp_fail
+            pings.append(mk_ping(
+                ts=start + timedelta(seconds=i * 5),
+                success=ok, kind="icmp",
+            ))
+        else:
+            pings.append(mk_ping(
+                ts=start + timedelta(seconds=i * 5),
+                success=True, kind="tcp",
+            ))
+    buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
+    assert buckets[0].severity == SEVERITY_FLICKER
+    # Even at 93% ICMP uptime, no TCP failure -> never escalates higher.
     assert buckets[0].longest_outage_s == 0.0
 
 
