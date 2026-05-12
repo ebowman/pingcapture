@@ -271,8 +271,31 @@ const fmtSec = (s) => {
 const fmtMs = (v) => v == null ? "—" : v.toFixed(1);
 const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, "") : "—";
 
-let currentWindow = 24;
-let currentGridDays = 30;
+// Settings are persisted in the URL so refresh/share preserves them.
+// w = latency-chart window in hours; d = outage-grid range in days.
+const ALLOWED_WINDOWS = new Set([1, 6, 24, 168]);
+const ALLOWED_GRID_DAYS = new Set([7, 30, 90]);
+
+function readSettingsFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const w = parseFloat(p.get("w"));
+  const d = parseFloat(p.get("d"));
+  return {
+    window: ALLOWED_WINDOWS.has(w) ? w : 24,
+    gridDays: ALLOWED_GRID_DAYS.has(d) ? d : 30,
+  };
+}
+
+function writeSettingsToUrl() {
+  const p = new URLSearchParams(location.search);
+  p.set("w", String(currentWindow));
+  p.set("d", String(currentGridDays));
+  history.replaceState(null, "", "?" + p.toString());
+}
+
+const _initial = readSettingsFromUrl();
+let currentWindow = _initial.window;
+let currentGridDays = _initial.gridDays;
 let chart = null;
 let chartWindow = null;  // window the current chart's axis was built for
 
@@ -377,11 +400,19 @@ document.getElementById("grid-strip").addEventListener("click", (e) => {
   // Quick win: just switch to 24h view and let the user scroll. A proper
   // window-zoom needs a backend filter — file as follow-up if you want it.
   currentWindow = 24;
-  document.querySelectorAll(".controls button[data-window]").forEach(b => {
-    b.classList.toggle("active", b.dataset.window === "24");
-  });
+  syncActiveButtons();
+  writeSettingsToUrl();
   refresh();
 });
+
+function syncActiveButtons() {
+  document.querySelectorAll(".controls button[data-window]").forEach(b => {
+    b.classList.toggle("active", parseFloat(b.dataset.window) === currentWindow);
+  });
+  document.querySelectorAll(".controls button[data-grid-days]").forEach(b => {
+    b.classList.toggle("active", parseFloat(b.dataset.gridDays) === currentGridDays);
+  });
+}
 
 function renderStatus(s) {
   const el = document.getElementById("status");
@@ -577,21 +608,26 @@ function renderChart(ts) {
 
 document.querySelectorAll(".controls button[data-window]").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".controls button[data-window]").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
     currentWindow = parseFloat(btn.dataset.window);
+    syncActiveButtons();
+    writeSettingsToUrl();
     refresh();
   });
 });
 
 document.querySelectorAll(".controls button[data-grid-days]").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".controls button[data-grid-days]").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
     currentGridDays = parseFloat(btn.dataset.gridDays);
+    syncActiveButtons();
+    writeSettingsToUrl();
     refresh();
   });
 });
+
+// On first load, reflect the URL settings in the UI and seed the URL with
+// canonical values so a copy/share always has them.
+syncActiveButtons();
+writeSettingsToUrl();
 
 refresh();
 setInterval(refresh, 10000);
