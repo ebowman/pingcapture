@@ -186,9 +186,10 @@
 
   <section class="grid grid-3" style="margin-top:1rem;">
     <div class="card">
-      <h2>Uptime (last <span id="window-label">24h</span>)</h2>
+      <h2>Video-call uptime (last <span id="window-label">24h</span>)</h2>
       <div class="row">
         <div class="stat" id="uptime">—<span class="unit">%</span></div>
+        <div class="muted">probes <span id="probe-uptime">—</span></div>
       </div>
     </div>
     <div class="card">
@@ -444,8 +445,10 @@ function renderStatus(s) {
 function renderSummary(s) {
   document.getElementById("window-label").textContent =
     currentWindow >= 24 ? (currentWindow / 24) + "d" : currentWindow + "h";
-  document.getElementById("uptime").innerHTML = s.uptime_pct.toFixed(3) +
+  document.getElementById("uptime").innerHTML = s.video_call_uptime_pct.toFixed(3) +
     '<span class="unit">%</span>';
+  document.getElementById("probe-uptime").textContent =
+    s.uptime_pct.toFixed(2) + "%";
   document.getElementById("outage-count").textContent = s.outages.length;
   const total = s.outages.reduce((a, o) => a + o.duration_s, 0);
   document.getElementById("outage-total").textContent = fmtSec(total);

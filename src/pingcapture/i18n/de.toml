@@ -14,7 +14,8 @@ Dieser Bericht basiert auf kontinuierlichen Netzwerkmessungen aus dem lokalen Ne
 """
 
 summary_heading = "Zusammenfassung"
-summary_uptime = "Gesamterfolgsrate der Verbindung"
+summary_video_uptime = "Videoanruf-Verfügbarkeit (Minuten, in denen ein Videoanruf möglich gewesen wäre)"
+summary_uptime = "Erfolgsrate der einzelnen Messsonden"
 summary_outage_count = "Erkannte Ausfälle"
 summary_total_outage = "Gesamte Ausfallzeit"
 summary_longest_outage = "Längster einzelner Ausfall"

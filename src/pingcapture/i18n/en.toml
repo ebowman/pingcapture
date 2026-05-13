@@ -14,7 +14,8 @@ This report is based on continuous network probes from the customer's local netw
 """
 
 summary_heading = "Executive summary"
-summary_uptime = "Overall connectivity success rate"
+summary_video_uptime = "Video-call uptime (minutes good enough for a video call)"
+summary_uptime = "Raw probe success rate"
 summary_outage_count = "Distinct outages detected"
 summary_total_outage = "Total time unreachable"
 summary_longest_outage = "Longest single outage"

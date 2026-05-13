@@ -21,6 +21,7 @@ from .analytics import (
     pivot_buckets_by_day,
     summarize_by_hour_of_day,
     uptime_pct,
+    video_call_uptime_pct,
 )
 from .config import Config
 from .i18n import Translator
@@ -125,6 +126,7 @@ def render_report(
         "duration_str": _format_duration(t, (inputs.end - inputs.start).total_seconds()),
         "generated_at_str": _fmt_ts(datetime.now(UTC)),
         "uptime_pct_value": uptime_pct(pings),
+        "video_call_uptime_pct_value": video_call_uptime_pct(pings, outages),
         "outages": [_outage_view(o, t) for o in outages],
         "total_outage_str": _format_duration(t, total_out),
         "longest_outage_str": _format_duration(t, longest),

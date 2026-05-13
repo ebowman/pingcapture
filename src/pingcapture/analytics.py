@@ -141,6 +141,74 @@ def uptime_pct(pings: Iterable[PingResult]) -> float:
     return 100.0 * ok / total
 
 
+# Video-call uptime thresholds. ITU/Cisco guidance for acceptable
+# interactive voice/video is one-way ≤150 ms latency, ≤30 ms jitter, ≤1 % loss.
+# Probes here measure round-trip, so the latency budget doubles to 300 ms.
+VIDEO_CALL_WINDOW_S = 60
+VIDEO_CALL_MAX_LOSS_PCT = 1.0
+VIDEO_CALL_MAX_P95_RTT_MS = 300.0
+VIDEO_CALL_MAX_JITTER_MS = 30.0
+
+
+def video_call_uptime_pct(
+    pings: Iterable[PingResult],
+    outages: Iterable[Outage],
+) -> float:
+    """User-experience uptime: fraction of 60s windows that would have
+    sustained a video call.
+
+    A window is BAD if any of:
+      - it overlaps a detected outage,
+      - packet loss in the window exceeds VIDEO_CALL_MAX_LOSS_PCT,
+      - p95 RTT in the window exceeds VIDEO_CALL_MAX_P95_RTT_MS,
+      - jitter (stddev of RTT) in the window exceeds VIDEO_CALL_MAX_JITTER_MS.
+
+    Windows with no probes are excluded from the denominator — gaps in
+    capture don't count for or against uptime.
+    """
+    window = timedelta(seconds=VIDEO_CALL_WINDOW_S)
+    buckets: dict[datetime, list[PingResult]] = {}
+    for p in pings:
+        key = p.ts.replace(second=0, microsecond=0)
+        buckets.setdefault(key, []).append(p)
+
+    if not buckets:
+        return 100.0
+
+    outage_list = list(outages)
+
+    def _overlaps_outage(bucket_start: datetime) -> bool:
+        bucket_end = bucket_start + window
+        for o in outage_list:
+            if o.start < bucket_end and o.end > bucket_start:
+                return True
+        return False
+
+    good = 0
+    for bucket_start, items in buckets.items():
+        if _overlaps_outage(bucket_start):
+            continue
+        failed = sum(1 for p in items if not p.success)
+        loss_pct = 100.0 * failed / len(items)
+        if loss_pct > VIDEO_CALL_MAX_LOSS_PCT:
+            continue
+        latencies = sorted(
+            p.latency_ms for p in items
+            if p.success and p.latency_ms is not None
+        )
+        if latencies:
+            p95 = _pct(latencies, 95)
+            if p95 > VIDEO_CALL_MAX_P95_RTT_MS:
+                continue
+            if len(latencies) >= 2:
+                jitter = statistics.stdev(latencies)
+                if jitter > VIDEO_CALL_MAX_JITTER_MS:
+                    continue
+        good += 1
+
+    return 100.0 * good / len(buckets)
+
+
 def latency_stats(pings: Iterable[PingResult]) -> list[LatencyStats]:
     by_target: dict[str, list[PingResult]] = {}
     for p in pings:
@@ -574,5 +642,6 @@ __all__ = [
     "pivot_buckets_by_day",
     "summarize_by_hour_of_day",
     "uptime_pct",
+    "video_call_uptime_pct",
     "window",
 ]

@@ -12,6 +12,7 @@ from pingcapture.analytics import (
     latency_stats,
     mtr_path_changes,
     uptime_pct,
+    video_call_uptime_pct,
 )
 from pingcapture.storage import MtrHop, MtrRun
 
@@ -45,6 +46,93 @@ def test_uptime_half(now: datetime) -> None:
 
 def test_uptime_empty_window_is_100() -> None:
     assert uptime_pct([]) == 100.0
+
+
+# --- video-call uptime ---------------------------------------------------
+
+
+def _good_minute(now: datetime, *, minute: int) -> list:
+    """One minute (60s) of all-successful, low-latency probes — a 'good' window."""
+    base = now + timedelta(minutes=minute)
+    kinds = ("icmp", "tcp")
+    return [
+        mk_ping(ts=base + timedelta(seconds=i * 5), success=True,
+                kind=kinds[i % 2], latency_ms=20.0)
+        for i in range(12)
+    ]
+
+
+def test_video_uptime_all_clear(now: datetime) -> None:
+    pings = _good_minute(now, minute=0) + _good_minute(now, minute=1)
+    assert video_call_uptime_pct(pings, []) == 100.0
+
+
+def test_video_uptime_excludes_outage_window(now: datetime) -> None:
+    # Two minutes; the second overlaps a detected outage.
+    pings = _good_minute(now, minute=0) + _good_minute(now, minute=1)
+    from pingcapture.analytics import Outage
+    outage = Outage(
+        start=now + timedelta(minutes=1, seconds=10),
+        end=now + timedelta(minutes=1, seconds=40),
+        duration_s=30.0,
+        failed_probes=6,
+        affected_targets=["1.1.1.1"],
+    )
+    assert video_call_uptime_pct(pings, [outage]) == 50.0
+
+
+def test_video_uptime_high_loss_window_is_bad(now: datetime) -> None:
+    # Minute 0 is clean. Minute 1 has 2 failures in 12 probes (~16% loss) > 1%.
+    good = _good_minute(now, minute=0)
+    bad_base = now + timedelta(minutes=1)
+    bad = []
+    for i in range(12):
+        kind = ("icmp", "tcp")[i % 2]
+        success = i not in (3, 7)
+        bad.append(mk_ping(
+            ts=bad_base + timedelta(seconds=i * 5),
+            success=success, kind=kind, latency_ms=20.0,
+        ))
+    assert video_call_uptime_pct(good + bad, []) == 50.0
+
+
+def test_video_uptime_high_p95_latency_is_bad(now: datetime) -> None:
+    # Minute 0 is clean. Minute 1 has p95 > 300ms.
+    good = _good_minute(now, minute=0)
+    bad_base = now + timedelta(minutes=1)
+    kinds = ("icmp", "tcp")
+    bad = [
+        mk_ping(ts=bad_base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=20.0 if i < 11 else 500.0)
+        for i in range(12)
+    ]
+    assert video_call_uptime_pct(good + bad, []) == 50.0
+
+
+def test_video_uptime_high_jitter_is_bad(now: datetime) -> None:
+    # Minute 0 is clean. Minute 1 has jitter > 30ms but each sample
+    # is still well under the 300ms p95 cap.
+    good = _good_minute(now, minute=0)
+    bad_base = now + timedelta(minutes=1)
+    kinds = ("icmp", "tcp")
+    bad = [
+        mk_ping(ts=bad_base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=20.0 if i % 2 == 0 else 120.0)
+        for i in range(12)
+    ]
+    assert video_call_uptime_pct(good + bad, []) == 50.0
+
+
+def test_video_uptime_empty_input_is_100() -> None:
+    assert video_call_uptime_pct([], []) == 100.0
+
+
+def test_video_uptime_ignores_empty_minutes(now: datetime) -> None:
+    # Capture has a gap (minute 5..10) — denominator should be 2, not 12.
+    pings = _good_minute(now, minute=0) + _good_minute(now, minute=15)
+    assert video_call_uptime_pct(pings, []) == 100.0
 
 
 def test_outage_threshold_not_met(now: datetime) -> None:

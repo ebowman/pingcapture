@@ -14,7 +14,8 @@ Tá an tuarascáil seo bunaithe ar thomhais leanúnacha líonra ó líonra áiti
 """
 
 summary_heading = "Achoimre fheidhmiúcháin"
-summary_uptime = "Ráta rathúlachta foriomlán an cheangail"
+summary_video_uptime = "Aimsireacht do ghlaonna físe (nóiméid a bheadh maith go leor do ghlao físe)"
+summary_uptime = "Ráta rathúlachta na n-iarrachtaí measta"
 summary_outage_count = "Briseadh seirbhíse ar leith braite"
 summary_total_outage = "Am iomlán gan cheangal"
 summary_longest_outage = "An briseadh seirbhíse aonair is faide"

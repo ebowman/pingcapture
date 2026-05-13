@@ -19,6 +19,7 @@ from ..analytics import (
     latency_stats,
     mtr_path_changes,
     uptime_pct,
+    video_call_uptime_pct,
     window,
 )
 from ..config import Config
@@ -116,6 +117,7 @@ def create_app(cfg: Config) -> FastAPI:
             {
                 "window_hours": hours,
                 "uptime_pct": uptime_pct(pings),
+                "video_call_uptime_pct": video_call_uptime_pct(pings, outages),
                 "outages": [
                     {
                         "start": o.start.isoformat(),
