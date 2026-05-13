@@ -137,9 +137,9 @@
 
 <h2>{{ t.t("summary_heading") }}</h2>
 <div class="summary-grid">
-  <div class="k">{{ t.t("summary_video_uptime") }}</div>
-  <div class="v">{{ "%.3f" % video_call_uptime_pct_value }} %</div>
   <div class="k">{{ t.t("summary_uptime") }}</div>
+  <div class="v">{{ "%.3f" % video_call_uptime_pct_value }} %</div>
+  <div class="k">{{ t.t("summary_probe_success") }}</div>
   <div class="v">{{ "%.3f" % uptime_pct_value }} %</div>
   <div class="k">{{ t.t("summary_outage_count") }}</div>
   <div class="v">{{ outages|length }}</div>
@@ -150,6 +150,7 @@
   <div class="k">{{ t.t("summary_buffer_bloat") }}</div>
   <div class="v">{% if buffer_bloat is none %}—{% else %}{{ "%.1f" % buffer_bloat }} ms{% endif %}</div>
 </div>
+<p class="muted" style="font-size:0.85rem; margin-top:0.5rem;">{{ t.t("summary_uptime_footnote") }}</p>
 
 <h2>{{ t.t("grid_heading") }}</h2>
 <p class="muted">{{ t.t("grid_intro") }}</p>

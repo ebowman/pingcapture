@@ -143,6 +143,25 @@
   .grid-tip.show { opacity: 1; }
   .grid-tip .tk { color: var(--muted); margin-right: 0.4rem; }
   .grid-tip .ts { font-weight: 600; margin-bottom: 0.3rem; display: block; }
+  /* Inline (?) definition popover for stat cards */
+  .defn { display: inline; margin-left: 0.3rem; }
+  .defn > summary {
+    display: inline-block; list-style: none; cursor: help;
+    width: 1.05rem; height: 1.05rem; line-height: 1rem; text-align: center;
+    border: 1px solid var(--muted); border-radius: 50%;
+    color: var(--muted); font-size: 0.7rem; font-weight: 600;
+    vertical-align: middle;
+  }
+  .defn > summary::-webkit-details-marker { display: none; }
+  .defn > summary:hover { color: var(--text); border-color: var(--text); }
+  .defn[open] > summary { color: var(--text); border-color: var(--text); }
+  .defn-body {
+    display: block; margin-top: 0.5rem; padding: 0.6rem 0.7rem;
+    background: #0b0f14; border: 1px solid var(--grid); border-radius: 6px;
+    font-size: 0.78rem; color: var(--muted); font-weight: 400;
+    line-height: 1.45;
+  }
+  .defn-body code { color: var(--text); }
 </style>
 </head>
 <body>
@@ -186,7 +205,17 @@
 
   <section class="grid grid-3" style="margin-top:1rem;">
     <div class="card">
-      <h2>Video-call uptime (last <span id="window-label">24h</span>)</h2>
+      <h2>Uptime (last <span id="window-label">24h</span>)<details class="defn"><summary aria-label="How uptime is defined">?</summary><div class="defn-body">
+        Percentage of one-minute windows that would have sustained a
+        video call. A minute counts as <em>down</em> if it overlaps a
+        detected outage, packet loss exceeds <code>1%</code>, p95 round-trip
+        latency exceeds <code>300&nbsp;ms</code>, or jitter (latency
+        standard&nbsp;deviation) exceeds <code>30&nbsp;ms</code>. Thresholds
+        follow ITU/Cisco interactive-video guidance.<br><br>
+        The smaller <em>probes</em> number is the raw success ratio of every
+        ICMP/TCP probe — it includes single-probe drops that a user would
+        never notice.
+      </div></details></h2>
       <div class="row">
         <div class="stat" id="uptime">—<span class="unit">%</span></div>
         <div class="muted">probes <span id="probe-uptime">—</span></div>

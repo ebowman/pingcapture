@@ -14,8 +14,9 @@ Dieser Bericht basiert auf kontinuierlichen Netzwerkmessungen aus dem lokalen Ne
 """
 
 summary_heading = "Zusammenfassung"
-summary_video_uptime = "Videoanruf-Verfügbarkeit (Minuten, in denen ein Videoanruf möglich gewesen wäre)"
-summary_uptime = "Erfolgsrate der einzelnen Messsonden"
+summary_uptime = "Verfügbarkeit"
+summary_probe_success = "Erfolgsrate der Messsonden"
+summary_uptime_footnote = "Verfügbarkeit ist der Anteil der Ein-Minuten-Fenster, in denen ein Videoanruf möglich gewesen wäre: kein überlappender Ausfall, Paketverlust ≤ 1 %, p95-Hin-und-Rückzeit ≤ 300 ms und Jitter ≤ 30 ms (gemäß ITU/Cisco-Empfehlungen für interaktive Videoanrufe). Die Erfolgsrate der Messsonden ist der reine Anteil zurückgekehrter ICMP/TCP-Sonden, einschließlich einzelner Aussetzer, die kein Anwender bemerken würde."
 summary_outage_count = "Erkannte Ausfälle"
 summary_total_outage = "Gesamte Ausfallzeit"
 summary_longest_outage = "Längster einzelner Ausfall"

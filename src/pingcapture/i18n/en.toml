@@ -14,8 +14,9 @@ This report is based on continuous network probes from the customer's local netw
 """
 
 summary_heading = "Executive summary"
-summary_video_uptime = "Video-call uptime (minutes good enough for a video call)"
-summary_uptime = "Raw probe success rate"
+summary_uptime = "Uptime"
+summary_probe_success = "Probe success rate"
+summary_uptime_footnote = "Uptime is the share of one-minute windows that would have sustained a video call: no overlapping outage, packet loss ≤ 1%, p95 round-trip latency ≤ 300 ms, and jitter ≤ 30 ms (ITU/Cisco interactive-video guidance). The probe success rate is the raw fraction of ICMP/TCP probes that returned, including single-probe drops a user would not notice."
 summary_outage_count = "Distinct outages detected"
 summary_total_outage = "Total time unreachable"
 summary_longest_outage = "Longest single outage"

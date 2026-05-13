@@ -14,8 +14,9 @@ Tá an tuarascáil seo bunaithe ar thomhais leanúnacha líonra ó líonra áiti
 """
 
 summary_heading = "Achoimre fheidhmiúcháin"
-summary_video_uptime = "Aimsireacht do ghlaonna físe (nóiméid a bheadh maith go leor do ghlao físe)"
-summary_uptime = "Ráta rathúlachta na n-iarrachtaí measta"
+summary_uptime = "Aimsireacht"
+summary_probe_success = "Ráta rathúlachta na measta"
+summary_uptime_footnote = "Is é an aimsireacht céatadán na bhfuinneog aon-nóiméid a bheadh sách maith do ghlao físe: gan briseadh forluiteach, caillteanas paicéad ≤ 1 %, aga moille p95 fillte ≤ 300 ms, agus crith ≤ 30 ms (de réir threoir ITU/Cisco do físghlaonna idirghníomhacha). Is é ráta rathúlachta na measta an cion amh d'iarrachtaí ICMP/TCP a d'fhill, lena n-áirítear titimí aonair nach dtabharfadh úsáideoir faoi deara."
 summary_outage_count = "Briseadh seirbhíse ar leith braite"
 summary_total_outage = "Am iomlán gan cheangal"
 summary_longest_outage = "An briseadh seirbhíse aonair is faide"
