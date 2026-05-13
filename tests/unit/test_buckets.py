@@ -80,7 +80,7 @@ def test_classification_thresholds() -> None:
 
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
     assert [b.severity for b in buckets] == [
-        SEVERITY_NOMINAL,   # 1 fail in 720 = 99.86% uptime, no outage span
+        SEVERITY_NONE,      # 1 ICMP-only fail, no TCP failure → invisible
         SEVERITY_MINOR,
         SEVERITY_MAJOR,
         SEVERITY_SEVERE,
@@ -127,12 +127,14 @@ def test_flicker_when_mixed_loss_exceeds_one_percent() -> None:
     assert buckets[0].longest_outage_s == 0.0
 
 
-def test_icmp_only_loss_below_3pct_is_nominal() -> None:
-    """ICMP-only loss with 0 TCP failures uses a looser 97% floor."""
+def test_icmp_only_loss_stays_green() -> None:
+    """ICMP-only loss with 0 TCP failures is invisible to the user
+    (upstream ICMP shaping), so the bucket stays SEVERITY_NONE.
+    Mirrors the behavior of detect_outages and video_call_uptime_pct."""
     start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
     end = start + timedelta(hours=1)
     pings = []
-    # 600 ICMP probes with 12 failures (98% ICMP uptime) + 120 successful TCP.
+    # 600 ICMP probes with 12 scattered failures (98%) + 120 successful TCP.
     icmp_fail = set(range(0, 600, 50))  # 12 ICMP failures
     for i in range(720):
         if i < 600:
@@ -147,18 +149,18 @@ def test_icmp_only_loss_below_3pct_is_nominal() -> None:
                 success=True, kind="tcp",
             ))
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
-    # 12/600 = 98% ICMP uptime >= 97% floor -> nominal even though combined
-    # uptime is below 99%.
-    assert buckets[0].severity == SEVERITY_NOMINAL
+    assert buckets[0].severity == SEVERITY_NONE
     assert buckets[0].failed == 12
 
 
-def test_icmp_only_loss_above_3pct_is_flicker_and_capped() -> None:
-    """Heavy ICMP-only loss (≥3%) flickers, but never escalates above flicker."""
+def test_heavy_icmp_only_loss_still_stays_green() -> None:
+    """Even heavy ICMP-only loss stays green as long as TCP holds and
+    no outage was opened — the grid follows the same TCP-authoritative
+    rule as the rest of the system."""
     start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
     end = start + timedelta(hours=1)
     pings = []
-    # 600 ICMP probes with 40 scattered failures (93% uptime) + 120 TCP OK.
+    # 600 ICMP probes with 40 scattered failures (93%) + 120 TCP OK.
     icmp_fail = set(range(0, 600, 15))  # 40 ICMP failures, none consecutive
     for i in range(720):
         if i < 600:
@@ -173,8 +175,7 @@ def test_icmp_only_loss_above_3pct_is_flicker_and_capped() -> None:
                 success=True, kind="tcp",
             ))
     buckets = bucket_outages(pings, window_start=start, window_end=end, bucket_size_s=3600)
-    assert buckets[0].severity == SEVERITY_FLICKER
-    # Even at 93% ICMP uptime, no TCP failure -> never escalates higher.
+    assert buckets[0].severity == SEVERITY_NONE
     assert buckets[0].longest_outage_s == 0.0
 
 

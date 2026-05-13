@@ -393,15 +393,10 @@ SEVERITY_MAJOR = "major"        # red — > 30s outage
 SEVERITY_SEVERE = "severe"      # dark red — >= 5min outage
 SEVERITY_NO_DATA = "no_data"    # grey
 
-# Buckets that mix kinds use this floor: <99% combined uptime tips into
-# FLICKER. 1% loss in a 700-probe hour is ~7 dropped probes; any more than
-# that pulls the eye in the grid.
+# Mixed-kind loss (TCP failed too) uses this floor: <99% combined uptime
+# tips a bucket into FLICKER. 1% loss in a 700-probe hour is ~7 dropped
+# probes; any more than that pulls the eye in the grid.
 NOMINAL_UPTIME_FLOOR = 99.0
-
-# Buckets where TCP never failed are reclassified by ICMP-only uptime with
-# a looser floor — the outage detector has already concluded these aren't
-# user-visible events, so we don't want them to yell.
-ICMP_ONLY_FLICKER_FLOOR = 97.0
 
 
 @dataclass(frozen=True)
@@ -430,12 +425,13 @@ def _severity_for(
     icmp_failed: int | None = None,
     icmp_samples: int | None = None,
 ) -> str:
-    """Classify a bucket. Bigger picture in pingcapture-pyt and pingcapture-ht4.
+    """Classify a bucket. Bigger picture in pingcapture-pyt, pingcapture-ht4,
+    and pingcapture-66j.
 
     TCP is the authoritative signal — TCP failing means user-visible breakage.
-    If TCP never failed in this bucket, we treat any ICMP-only loss as low-key
-    (mostly upstream ICMP shaping, not a real outage). Such buckets are capped
-    at FLICKER severity and use a more permissive uptime floor.
+    If TCP never failed and no outage was opened, ICMP-only loss is invisible
+    to the user (upstream ICMP shaping) and the bucket stays SEVERITY_NONE,
+    matching how video_call_uptime_pct treats the same data.
     """
     if samples == 0:
         return SEVERITY_NO_DATA
@@ -450,13 +446,11 @@ def _severity_for(
     if longest_s > 5:
         return SEVERITY_FLICKER
     # No outage span >5s. Look at the loss pattern.
-    if tcp_failed == 0 and icmp_failed and icmp_samples:
-        # ICMP-only loss — most likely upstream shaping. Loose floor and cap.
-        icmp_uptime = 100.0 * (icmp_samples - icmp_failed) / icmp_samples
-        if icmp_uptime >= ICMP_ONLY_FLICKER_FLOOR:
-            return SEVERITY_NOMINAL
-        return SEVERITY_FLICKER
-    # Mixed loss (or TCP failed too). Use combined uptime.
+    if tcp_failed == 0:
+        # No TCP failure and no outage opened: ICMP-only shaping is invisible.
+        return SEVERITY_NONE
+    # TCP failed (but didn't cluster enough to open an outage). Use combined
+    # uptime to decide between nominal and flicker.
     uptime = 100.0 * (samples - failed) / samples
     if uptime >= NOMINAL_UPTIME_FLOOR:
         return SEVERITY_NOMINAL

@@ -76,11 +76,13 @@ def test_schema_version_set(tmp_db) -> None:
 def test_hourly_buckets_materialize_on_insert(store: Store, now: datetime) -> None:
     """Inserting pings should keep the hourly_buckets row for that hour current."""
     hour = now.replace(minute=0, second=0, microsecond=0)
-    # 3 successes, 1 failure, all within the same hour.
+    # 3 successes, 1 TCP failure, all within the same hour. TCP failure is
+    # required for the bucket to leave SEVERITY_NONE — ICMP-only loss is
+    # treated as invisible (see pingcapture-66j).
     store.insert_ping(mk_ping(ts=hour + timedelta(minutes=1)))
     store.insert_ping(mk_ping(ts=hour + timedelta(minutes=2)))
     store.insert_ping(mk_ping(ts=hour + timedelta(minutes=3),
-                              success=False, error="no reply"))
+                              kind="tcp", success=False, error="no reply"))
     store.insert_ping(mk_ping(ts=hour + timedelta(minutes=4)))
     rows = store.hourly_buckets_between(hour, hour + timedelta(hours=1))
     assert len(rows) == 1
@@ -90,7 +92,7 @@ def test_hourly_buckets_materialize_on_insert(store: Store, now: datetime) -> No
     assert failed == 1
     # One failed probe is not enough to trigger detect_outages' 3-in-a-row rule.
     assert count == 0
-    assert severity == "flicker"  # has failure but no outage span
+    assert severity == "flicker"  # TCP failed, 75% combined uptime < 99% floor
 
 
 def test_hourly_buckets_updates_in_place(store: Store, now: datetime) -> None:
