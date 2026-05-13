@@ -723,8 +723,11 @@ def _xmr_signals(values: list[float], center: float, unpl: float, lnpl: float) -
     for i, v in enumerate(values):
         if v > unpl or v < lnpl:
             out[i].append("outside_limits")
-    # Rule 2: 8 in a row on the same side of the centre line. Mark the 8th
-    # and every continuation point so the user sees the full run highlighted.
+    # Rule 2: 8 in a row on the same side of the centre line. Mark only the
+    # *trigger* (the 8th point where the run becomes detectable), not every
+    # continuation. Marking continuations produced a "carpet" of hundreds of
+    # red dots when the process had drifted, drowning out acute outliers and
+    # making the chart look broken. Standard XmR practice flags the trigger.
     side = [0] * n
     for i, v in enumerate(values):
         if v > center:
@@ -743,7 +746,7 @@ def _xmr_signals(values: list[float], center: float, unpl: float, lnpl: float) -
         else:
             run = 0
             last_side = 0
-        if run >= 8:
+        if run == 8:
             out[i].append("run_of_8")
     # Rule 3: three of four beyond the 2/3 line (two-sigma) on the same side.
     # 2/3 line = centre + (2/3) * (UNPL - centre)  — works symmetrically.

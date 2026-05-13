@@ -83,6 +83,18 @@
   .sig-pill.trend  { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
   .sig-pill.twos   { background: color-mix(in srgb, #c879ff 18%, transparent); color: #c879ff; border-color: color-mix(in srgb, #c879ff 40%, transparent); }
   .sig-none { color: var(--muted); font-style: italic; }
+  .legend {
+    display: flex; gap: 1.1rem; flex-wrap: wrap;
+    margin-top: 0.6rem; color: var(--muted); font-size: 0.78rem;
+    align-items: center;
+  }
+  .legend .dot {
+    display: inline-block; width: 0.65rem; height: 0.65rem;
+    border-radius: 50%; vertical-align: middle; margin-right: 0.3rem;
+  }
+  .legend .dot-acute { background: #f85149; }
+  .legend .dot-shift { background: #d29922; }
+  .legend .dot-trend { background: #58a6ff; }
   .empty { color: var(--muted); padding: 0.6rem 0; font-size: 0.9rem; }
   details.defn { display: inline; margin-left: 0.3rem; }
   details.defn > summary {
@@ -158,6 +170,11 @@
         <button data-kind="tcp">TCP</button>
       </div>
     </div>
+    <div class="legend">
+      <span><i class="dot dot-acute"></i>acute — outside limits, 3 of 4 past 2/3, big jump</span>
+      <span><i class="dot dot-shift"></i>shift — run of 8 (trigger only)</span>
+      <span><i class="dot dot-trend"></i>trend — 6 strictly increasing or decreasing</span>
+    </div>
   </section>
 
   <div id="charts"></div>
@@ -208,6 +225,20 @@ const SIGNAL_LABEL = {
   trend_down_6:    { text: "trend down 6", cls: "trend" },
   mr_outside_url:  { text: "jump > MR-URL", cls: "" },
 };
+
+// Classify a list of signals into the dominant visual class. A point that
+// is both acute and structural reads as acute (the more urgent finding).
+// Precedence: acute > trend > shift > none.
+const ACUTE_SIGNALS = new Set(["outside_limits", "two_sigma_3of4", "mr_outside_url"]);
+const TREND_SIGNALS = new Set(["trend_up_6", "trend_down_6"]);
+const SHIFT_SIGNALS = new Set(["run_of_8"]);
+function classifySignals(signals) {
+  if (!signals || signals.length === 0) return null;
+  if (signals.some(s => ACUTE_SIGNALS.has(s))) return "acute";
+  if (signals.some(s => TREND_SIGNALS.has(s))) return "trend";
+  if (signals.some(s => SHIFT_SIGNALS.has(s))) return "shift";
+  return null;
+}
 
 function syncActiveButtons() {
   document.querySelectorAll("button[data-hours]").forEach(b => {
@@ -290,14 +321,20 @@ function renderOneChart(root, c) {
   head.querySelector(".t-lnpl").textContent = fmtMs(c.lnpl);
   head.querySelector(".t-mrbar").textContent = fmtMs(c.mr_bar);
 
-  // Individuals chart data
+  // Individuals chart data. Signal points get split into three classes so
+  // the reader can distinguish acute outliers from structural shifts and
+  // trends — same data, but red/amber/blue tells you *what kind* of signal.
   const indPoints = c.points.map(p => ({ x: new Date(p.ts), y: p.value }));
-  const flaggedPoints = c.points
-    .map((p, i) => ({ p, i }))
-    .filter(({ p }) => p.signals.some(s =>
-      s === "outside_limits" || s === "two_sigma_3of4" ||
-      s === "run_of_8" || s === "trend_up_6" || s === "trend_down_6"))
-    .map(({ p }) => ({ x: new Date(p.ts), y: p.value }));
+  const acutePoints = [];
+  const shiftPoints = [];
+  const trendPoints = [];
+  for (const p of c.points) {
+    const pt = { x: new Date(p.ts), y: p.value };
+    let cls = classifySignals(p.signals);
+    if (cls === "acute") acutePoints.push(pt);
+    else if (cls === "shift") shiftPoints.push(pt);
+    else if (cls === "trend") trendPoints.push(pt);
+  }
 
   entry.ind.data.datasets = [
     {
@@ -310,11 +347,38 @@ function renderOneChart(root, c) {
       pointRadius: 1.8,
       pointHoverRadius: 4,
       tension: 0,
+      order: 4,
+    },
+    // Structural shift (run of 8) — amber. Drawn under acute so a point
+    // that's both a run trigger and an outlier still reads as red.
+    {
+      label: "shift",
+      data: shiftPoints,
+      parsing: false,
+      borderColor: "transparent",
+      backgroundColor: "#d29922",
+      pointRadius: 4.5,
+      pointHoverRadius: 6,
+      showLine: false,
+      order: 3,
+    },
+    // Trend — accent blue.
+    {
+      label: "trend",
+      data: trendPoints,
+      parsing: false,
+      borderColor: "transparent",
+      backgroundColor: "#58a6ff",
+      pointRadius: 4.5,
+      pointHoverRadius: 6,
+      showLine: false,
       order: 2,
     },
+    // Acute (outside limits / 3-of-4 past 2/3 / MR-URL jump) — red. Drawn
+    // last (lowest order value) so it always wins z-order.
     {
-      label: "signal",
-      data: flaggedPoints,
+      label: "acute",
+      data: acutePoints,
       parsing: false,
       borderColor: "transparent",
       backgroundColor: "#f85149",
@@ -459,8 +523,8 @@ function makeIndividualsConfig() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (c) => c.dataset.label === "signal"
-              ? `signal · ${c.parsed.y.toFixed(1)} ms`
+            label: (c) => ["acute", "shift", "trend"].includes(c.dataset.label)
+              ? `${c.dataset.label} · ${c.parsed.y.toFixed(1)} ms`
               : `${c.parsed.y.toFixed(1)} ms`,
             title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
           },

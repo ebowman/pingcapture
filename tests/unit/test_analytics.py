@@ -423,14 +423,15 @@ def test_xmr_flags_point_outside_limits(now: datetime) -> None:
     assert "mr_outside_url" in sigs
 
 
-def test_xmr_flags_run_of_eight(now: datetime) -> None:
-    # 4 above, 4 below, then 8 above — the 8th of the run should fire.
-    vals = ([12, 8] * 4) + [12, 12, 12, 12, 12, 12, 12, 12]
+def test_xmr_flags_run_of_eight_trigger_only(now: datetime) -> None:
+    # 4 above, 4 below, then 10 above — only the *trigger* (the 8th of the
+    # run) fires; continuation points do not. This matches standard XmR
+    # practice and keeps drifted-process series from carpeting the chart.
+    vals = ([12, 8] * 4) + [12] * 10
     charts = xmr_charts(_xmr_pings(now, vals), window_start=now, bucket_size_s=300)
     flagged = [i for i, p in enumerate(charts[0].points) if "run_of_8" in p.signals]
-    # Eight-in-a-row starts at index len(vals) - 8, so the 8th of the run is
-    # the last point; continuations would also flag, but there are none here.
-    assert flagged == [len(vals) - 1]
+    # Run of 12s starts at index 8; the 8th of that run is index 8+7 = 15.
+    assert flagged == [15]
 
 
 def test_xmr_flags_trend_up_six(now: datetime) -> None:
