@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pingcapture — XmR control charts</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1f242c;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --good: #2ea043;
+    --warn: #d29922;
+    --bad: #f85149;
+    --accent: #58a6ff;
+    --grid: #30363d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    line-height: 1.45;
+  }
+  header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--grid);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.02em; }
+  main { padding: 1.5rem; max-width: 1280px; margin: 0 auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--grid);
+    border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 1rem;
+  }
+  .card h2 {
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+    margin: 0 0 0.6rem; color: var(--muted); font-weight: 600;
+  }
+  .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .controls button {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--grid); border-radius: 8px;
+    padding: 0.35rem 0.8rem; font-size: 0.85rem; cursor: pointer;
+    font-family: inherit;
+  }
+  .controls button.active { background: var(--accent); border-color: var(--accent); color: #061018; font-weight: 600; }
+  .controls button:hover:not(.active) { background: #232a35; }
+  .ctrl-divider { width: 1px; align-self: stretch; background: var(--grid); margin: 0 0.2rem; }
+  .ctrl-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 0.3rem; }
+  .chart-wrap { position: relative; height: 240px; }
+  .chart-wrap-mr { position: relative; height: 130px; }
+  .target-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.6rem;
+  }
+  .target-head h3 {
+    margin: 0; font-size: 1rem; font-weight: 600;
+  }
+  .target-head .meta {
+    color: var(--muted); font-size: 0.82rem; font-variant-numeric: tabular-nums;
+  }
+  .target-head .meta code { color: var(--text); }
+  .signals {
+    margin-top: 0.5rem;
+    display: flex; flex-wrap: wrap; gap: 0.4rem;
+    font-size: 0.78rem;
+  }
+  .sig-pill {
+    background: color-mix(in srgb, var(--bad) 18%, transparent);
+    color: var(--bad);
+    border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+    border-radius: 6px;
+    padding: 0.15rem 0.5rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .sig-pill.run    { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+  .sig-pill.trend  { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  .sig-pill.twos   { background: color-mix(in srgb, #c879ff 18%, transparent); color: #c879ff; border-color: color-mix(in srgb, #c879ff 40%, transparent); }
+  .sig-none { color: var(--muted); font-style: italic; }
+  .empty { color: var(--muted); padding: 0.6rem 0; font-size: 0.9rem; }
+  details.defn { display: inline; margin-left: 0.3rem; }
+  details.defn > summary {
+    display: inline-block; list-style: none; cursor: help;
+    width: 1.05rem; height: 1.05rem; line-height: 1rem; text-align: center;
+    border: 1px solid var(--muted); border-radius: 50%;
+    color: var(--muted); font-size: 0.7rem; font-weight: 600;
+    vertical-align: middle;
+  }
+  details.defn > summary::-webkit-details-marker { display: none; }
+  details.defn > summary:hover { color: var(--text); border-color: var(--text); }
+  details.defn[open] > summary { color: var(--text); border-color: var(--text); }
+  .defn-body {
+    display: block; margin-top: 0.5rem; padding: 0.6rem 0.7rem;
+    background: #0b0f14; border: 1px solid var(--grid); border-radius: 6px;
+    font-size: 0.78rem; color: var(--muted); font-weight: 400;
+    line-height: 1.5;
+    max-width: 56rem;
+  }
+  .defn-body code { color: var(--text); }
+  footer { padding: 1.5rem; text-align: center; color: var(--muted); font-size: 0.8rem; }
+  a.crumb {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--grid); border-radius: 8px;
+    padding: 0.35rem 0.8rem; font-size: 0.85rem; text-decoration: none;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>pingcapture &middot; XmR control charts</h1>
+  <a class="crumb" href="/">← Dashboard</a>
+</header>
+
+<main>
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+      <h2 style="margin:0;">Process behaviour
+        <details class="defn"><summary aria-label="What is an XmR chart?">?</summary><div class="defn-body">
+          An <strong>XmR chart</strong> (Donald Wheeler, <em>Understanding Variation</em>)
+          plots the individual values plus their moving range, with natural
+          process limits derived from the data itself rather than chosen
+          arbitrarily. The centre line is the mean; the upper/lower
+          natural process limits (<code>UNPL</code>/<code>LNPL</code>) are
+          <code>mean&nbsp;±&nbsp;2.66·MR&#x305;</code>, where
+          <code>MR&#x305;</code> is the average moving range between
+          successive points.<br><br>
+          A point inside the limits is <em>routine variation</em> (common
+          cause) — leave the process alone. A point or pattern outside is a
+          <em>signal of special cause</em> — investigate. Wheeler's detection
+          rules used here: (1) point outside limits, (2) eight in a row on
+          one side of the centre, (3) three of four beyond the 2/3 line,
+          (4) six consecutive points trending up or down. The MR chart also
+          flags any jump beyond <code>3.27·MR&#x305;</code>.<br><br>
+          Each individual is the median RTT for a 5-minute bin of successful
+          probes for one target. Bins with zero successful probes are
+          omitted (gap, not zero).
+        </div></details>
+      </h2>
+      <div class="controls">
+        <span class="ctrl-label">window</span>
+        <button data-hours="24" class="active">24h</button>
+        <button data-hours="168">7d</button>
+        <button data-hours="720">30d</button>
+        <span class="ctrl-divider" aria-hidden="true"></span>
+        <span class="ctrl-label">bin</span>
+        <button data-bucket="60">1 min</button>
+        <button data-bucket="300" class="active">5 min</button>
+        <button data-bucket="900">15 min</button>
+        <span class="ctrl-divider" aria-hidden="true"></span>
+        <span class="ctrl-label">kind</span>
+        <button data-kind="icmp" class="active">ICMP</button>
+        <button data-kind="tcp">TCP</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="charts"></div>
+</main>
+
+<footer>auto-refresh every 30s &middot; <span id="updated">—</span></footer>
+
+<script>
+const fmtMs = (v) => v == null ? "—" : v.toFixed(1) + " ms";
+const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, " UTC") : "—";
+
+const ALLOWED_HOURS = new Set([24, 168, 720]);
+const ALLOWED_BUCKETS = new Set([60, 300, 900]);
+const ALLOWED_KINDS = new Set(["icmp", "tcp"]);
+
+function readSettingsFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const h = parseFloat(p.get("h"));
+  const b = parseInt(p.get("b"), 10);
+  const k = p.get("k");
+  return {
+    hours: ALLOWED_HOURS.has(h) ? h : 24,
+    bucket: ALLOWED_BUCKETS.has(b) ? b : 300,
+    kind: ALLOWED_KINDS.has(k) ? k : "icmp",
+  };
+}
+function writeSettingsToUrl() {
+  const p = new URLSearchParams(location.search);
+  p.set("h", String(currentHours));
+  p.set("b", String(currentBucket));
+  p.set("k", currentKind);
+  history.replaceState(null, "", "?" + p.toString());
+}
+
+const _init = readSettingsFromUrl();
+let currentHours = _init.hours;
+let currentBucket = _init.bucket;
+let currentKind = _init.kind;
+
+// Per-target chart instances kept around for incremental updates.
+const charts = new Map();   // target -> { ind: Chart, mr: Chart, rootEl }
+
+const SIGNAL_LABEL = {
+  outside_limits:  { text: "outside limits", cls: "" },
+  run_of_8:        { text: "run of 8", cls: "run" },
+  two_sigma_3of4:  { text: "3 of 4 past 2/3", cls: "twos" },
+  trend_up_6:      { text: "trend up 6", cls: "trend" },
+  trend_down_6:    { text: "trend down 6", cls: "trend" },
+  mr_outside_url:  { text: "jump > MR-URL", cls: "" },
+};
+
+function syncActiveButtons() {
+  document.querySelectorAll("button[data-hours]").forEach(b => {
+    b.classList.toggle("active", parseFloat(b.dataset.hours) === currentHours);
+  });
+  document.querySelectorAll("button[data-bucket]").forEach(b => {
+    b.classList.toggle("active", parseInt(b.dataset.bucket, 10) === currentBucket);
+  });
+  document.querySelectorAll("button[data-kind]").forEach(b => {
+    b.classList.toggle("active", b.dataset.kind === currentKind);
+  });
+}
+
+async function refresh() {
+  const url = `/api/xmr?hours=${currentHours}&bucket_s=${currentBucket}&kind=${currentKind}`;
+  let payload;
+  try {
+    payload = await fetch(url).then(r => r.json());
+  } catch (e) {
+    console.error(e);
+    return;
+  }
+  const root = document.getElementById("charts");
+  if (!payload.charts.length) {
+    // Wipe out any prior charts so the user sees the "no data" state cleanly.
+    for (const { ind, mr } of charts.values()) { ind.destroy(); mr.destroy(); }
+    charts.clear();
+    root.innerHTML = '<div class="card"><div class="empty">No targets with enough data in this window. Try a wider window or a smaller bin.</div></div>';
+    document.getElementById("updated").textContent = `${currentKind.toUpperCase()} · no data`;
+    return;
+  }
+  // Drop any charts whose target is no longer present.
+  const presentTargets = new Set(payload.charts.map(c => c.target));
+  for (const [target, refs] of [...charts.entries()]) {
+    if (!presentTargets.has(target)) {
+      refs.ind.destroy(); refs.mr.destroy();
+      refs.rootEl.remove();
+      charts.delete(target);
+    }
+  }
+  for (const c of payload.charts) {
+    renderOneChart(root, c);
+  }
+  document.getElementById("updated").textContent =
+    `${currentKind.toUpperCase()} · ${payload.charts.length} target${payload.charts.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString()}`;
+}
+
+function renderOneChart(root, c) {
+  let entry = charts.get(c.target);
+  if (!entry) {
+    const card = document.createElement("section");
+    card.className = "card";
+    card.dataset.target = c.target;
+    card.innerHTML = `
+      <div class="target-head">
+        <h3><span class="t-label">${c.label}</span> <span style="color:var(--muted);font-weight:400;font-size:0.85rem;">${c.target}</span></h3>
+        <div class="meta">
+          centre <code class="t-center">—</code> ·
+          UNPL <code class="t-unpl">—</code> ·
+          LNPL <code class="t-lnpl">—</code> ·
+          MR&#x305; <code class="t-mrbar">—</code>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas></canvas></div>
+      <div class="chart-wrap-mr"><canvas></canvas></div>
+      <div class="signals"></div>
+    `;
+    root.appendChild(card);
+    const [indCanvas, mrCanvas] = card.querySelectorAll("canvas");
+    const ind = new Chart(indCanvas, makeIndividualsConfig());
+    const mr = new Chart(mrCanvas, makeMrConfig());
+    entry = { ind, mr, rootEl: card };
+    charts.set(c.target, entry);
+  }
+
+  const head = entry.rootEl;
+  head.querySelector(".t-label").textContent = c.label;
+  head.querySelector(".t-center").textContent = fmtMs(c.center);
+  head.querySelector(".t-unpl").textContent = fmtMs(c.unpl);
+  head.querySelector(".t-lnpl").textContent = fmtMs(c.lnpl);
+  head.querySelector(".t-mrbar").textContent = fmtMs(c.mr_bar);
+
+  // Individuals chart data
+  const indPoints = c.points.map(p => ({ x: new Date(p.ts), y: p.value }));
+  const flaggedPoints = c.points
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => p.signals.some(s =>
+      s === "outside_limits" || s === "two_sigma_3of4" ||
+      s === "run_of_8" || s === "trend_up_6" || s === "trend_down_6"))
+    .map(({ p }) => ({ x: new Date(p.ts), y: p.value }));
+
+  entry.ind.data.datasets = [
+    {
+      label: "individual",
+      data: indPoints,
+      parsing: false,
+      borderColor: "#58a6ff",
+      backgroundColor: "#58a6ff",
+      borderWidth: 1.4,
+      pointRadius: 1.8,
+      pointHoverRadius: 4,
+      tension: 0,
+      order: 2,
+    },
+    {
+      label: "signal",
+      data: flaggedPoints,
+      parsing: false,
+      borderColor: "transparent",
+      backgroundColor: "#f85149",
+      pointRadius: 4.5,
+      pointHoverRadius: 6,
+      showLine: false,
+      order: 1,
+    },
+    horizontalLine("UNPL", c.unpl, "#f85149", [4, 4]),
+    horizontalLine("centre", c.center, "#8b949e", [2, 4]),
+    horizontalLine("LNPL", c.lnpl, "#f85149", [4, 4]),
+  ];
+  setXBounds(entry.ind);
+  entry.ind.update("none");
+
+  // MR chart data
+  const mrPoints = c.points
+    .filter(p => p.mr != null)
+    .map(p => ({ x: new Date(p.ts), y: p.mr }));
+  const mrFlagged = c.points
+    .filter(p => p.signals.includes("mr_outside_url"))
+    .map(p => ({ x: new Date(p.ts), y: p.mr }));
+
+  entry.mr.data.datasets = [
+    {
+      label: "moving range",
+      data: mrPoints,
+      parsing: false,
+      borderColor: "#79c0ff",
+      backgroundColor: "#79c0ff",
+      borderWidth: 1.2,
+      pointRadius: 1.4,
+      pointHoverRadius: 3.5,
+      tension: 0,
+      order: 2,
+    },
+    {
+      label: "signal",
+      data: mrFlagged,
+      parsing: false,
+      borderColor: "transparent",
+      backgroundColor: "#f85149",
+      pointRadius: 4,
+      pointHoverRadius: 5,
+      showLine: false,
+      order: 1,
+    },
+    horizontalLine("MR URL", c.mr_url, "#f85149", [4, 4]),
+    horizontalLine("MR-bar", c.mr_bar, "#8b949e", [2, 4]),
+  ];
+  setXBounds(entry.mr);
+  entry.mr.update("none");
+
+  // Signals summary list
+  const tally = new Map();
+  for (const p of c.points) {
+    for (const s of p.signals) {
+      tally.set(s, (tally.get(s) || 0) + 1);
+    }
+  }
+  const sigDiv = entry.rootEl.querySelector(".signals");
+  if (tally.size === 0) {
+    sigDiv.innerHTML = '<span class="sig-none">in control — no signals fired</span>';
+  } else {
+    sigDiv.innerHTML = [...tally.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => {
+        const lbl = SIGNAL_LABEL[k] || { text: k, cls: "" };
+        return `<span class="sig-pill ${lbl.cls}">${lbl.text} · ${n}</span>`;
+      }).join("");
+  }
+}
+
+function horizontalLine(label, y, color, dash) {
+  if (y == null || !isFinite(y)) return { label, data: [], parsing: false };
+  return {
+    label,
+    data: [],   // populated in afterDataLimits via the y-line drawing
+    borderColor: color,
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderDash: dash,
+    pointRadius: 0,
+    pointHoverRadius: 0,
+    fill: false,
+    spanGaps: true,
+    yVal: y,   // we read this back in the afterDraw plugin
+    order: 9,
+  };
+}
+
+const limitLinesPlugin = {
+  id: "limit-lines",
+  afterDraw(chart) {
+    const { ctx, chartArea, scales } = chart;
+    if (!chartArea) return;
+    ctx.save();
+    for (const ds of chart.data.datasets) {
+      if (ds.yVal == null || !isFinite(ds.yVal)) continue;
+      const y = scales.y.getPixelForValue(ds.yVal);
+      if (y < chartArea.top || y > chartArea.bottom) continue;
+      ctx.beginPath();
+      ctx.setLineDash(ds.borderDash || []);
+      ctx.strokeStyle = ds.borderColor;
+      ctx.lineWidth = ds.borderWidth || 1;
+      ctx.moveTo(chartArea.left, y);
+      ctx.lineTo(chartArea.right, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = ds.borderColor;
+      ctx.font = "11px -apple-system, system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(ds.label, chartArea.right - 4, y - 2);
+    }
+    ctx.restore();
+  },
+};
+Chart.register(limitLinesPlugin);
+
+function setXBounds(chart) {
+  const now = Date.now();
+  chart.options.scales.x.min = now - currentHours * 3600 * 1000;
+  chart.options.scales.x.max = now;
+}
+
+function makeIndividualsConfig() {
+  return {
+    type: "line",
+    data: { datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "nearest", intersect: false },
+      scales: {
+        x: { type: "time", grid: { color: "#222831" }, ticks: { color: "#8b949e" } },
+        y: { beginAtZero: true, grid: { color: "#222831" },
+             ticks: { color: "#8b949e", callback: v => v + " ms" } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (c) => c.dataset.label === "signal"
+              ? `signal · ${c.parsed.y.toFixed(1)} ms`
+              : `${c.parsed.y.toFixed(1)} ms`,
+            title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
+          },
+        },
+      },
+    },
+  };
+}
+
+function makeMrConfig() {
+  return {
+    type: "line",
+    data: { datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "nearest", intersect: false },
+      scales: {
+        x: { type: "time", grid: { color: "#222831" }, ticks: { color: "#8b949e" } },
+        y: { beginAtZero: true, grid: { color: "#222831" },
+             ticks: { color: "#8b949e", callback: v => v + " ms" } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (c) => `MR · ${c.parsed.y.toFixed(1)} ms`,
+            title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
+          },
+        },
+      },
+    },
+  };
+}
+
+document.querySelectorAll("button[data-hours]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    currentHours = parseFloat(btn.dataset.hours);
+    syncActiveButtons(); writeSettingsToUrl(); refresh();
+  });
+});
+document.querySelectorAll("button[data-bucket]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    currentBucket = parseInt(btn.dataset.bucket, 10);
+    syncActiveButtons(); writeSettingsToUrl(); refresh();
+  });
+});
+document.querySelectorAll("button[data-kind]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    currentKind = btn.dataset.kind;
+    syncActiveButtons(); writeSettingsToUrl(); refresh();
+  });
+});
+
+syncActiveButtons();
+writeSettingsToUrl();
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

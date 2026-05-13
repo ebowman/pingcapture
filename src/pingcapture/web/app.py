@@ -21,6 +21,7 @@ from ..analytics import (
     uptime_pct,
     video_call_uptime_pct,
     window,
+    xmr_charts,
 )
 from ..config import Config
 from ..i18n import supported_languages
@@ -28,6 +29,7 @@ from ..report import ReportInputs, WindowOption, parse_since, render_report
 from ..storage import Store
 
 STATIC_INDEX = Path(__file__).parent / "static" / "index.html"
+STATIC_XMR = Path(__file__).parent / "static" / "xmr.html"
 
 
 def _now() -> datetime:
@@ -275,6 +277,66 @@ def create_app(cfg: Config) -> FastAPI:
                 )
             cur += one_hour
         return out
+
+    @app.get("/xmr", response_class=HTMLResponse)
+    def xmr_page() -> HTMLResponse:
+        if not STATIC_XMR.exists():
+            raise HTTPException(500, "xmr page missing")
+        return HTMLResponse(
+            STATIC_XMR.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
+
+    @app.get("/api/xmr")
+    def api_xmr(
+        hours: float = 24.0,
+        bucket_s: int = 300,
+        kind: str = "icmp",
+    ) -> JSONResponse:
+        if bucket_s <= 0:
+            raise HTTPException(400, "bucket_s must be > 0")
+        if kind not in ("icmp", "tcp"):
+            raise HTTPException(400, "kind must be icmp or tcp")
+        start, end = window(_now(), hours=hours)
+        with _store() as store:
+            pings = store.pings_between(start, end, kind=kind)
+        charts = xmr_charts(
+            pings,
+            window_start=start,
+            bucket_size_s=bucket_s,
+            kind=kind,
+        )
+        return JSONResponse(
+            {
+                "window_start": start.isoformat(),
+                "window_end": end.isoformat(),
+                "bucket_s": bucket_s,
+                "kind": kind,
+                "charts": [
+                    {
+                        "target": c.target,
+                        "label": c.label,
+                        "kind": c.kind,
+                        "center": c.center,
+                        "unpl": c.unpl,
+                        "lnpl": c.lnpl,
+                        "mr_bar": c.mr_bar,
+                        "mr_url": c.mr_url,
+                        "points": [
+                            {
+                                "ts": p.ts.isoformat(),
+                                "value": p.value,
+                                "samples": p.samples,
+                                "mr": p.mr,
+                                "signals": p.signals,
+                            }
+                            for p in c.points
+                        ],
+                    }
+                    for c in charts
+                ],
+            }
+        )
 
     @app.get("/api/recent")
     def api_recent(limit: int = 50) -> JSONResponse:

@@ -622,6 +622,223 @@ def summarize_by_hour_of_day(buckets: list[Bucket]) -> list[HourSummary]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# XmR / process behaviour charts (Donald Wheeler, "Understanding Variation").
+#
+# An XmR chart pairs a chart of *individual* values with a chart of the
+# *moving range* between successive values. The natural process limits are
+# derived from the moving range itself — no assumption of normality, no
+# arbitrary thresholds. Constants below are Wheeler's:
+#
+#   UNPL/LNPL for individuals  = mean ± 2.660 · MR-bar
+#   URL for moving range       = 3.268 · MR-bar
+#
+# 2.660 = 3 / d2 with d2 = 1.128 for subgroup size n=2 (the moving range of
+# consecutive points). 3.268 = D4 for n=2.
+#
+# Wheeler's "Western Electric / Detection Rules" for signals of special cause:
+#   1. A single point outside the natural process limits.
+#   2. Eight successive points on the same side of the centre line ("run").
+#   3. Three of four successive points beyond 2-sigma (two-thirds of the way
+#      from the centre to a limit) on the same side.
+#   4. Six successive points steadily increasing or steadily decreasing
+#      ("trend"). Strict monotonic — equal values break the run.
+# ---------------------------------------------------------------------------
+
+XMR_NPL_CONSTANT = 2.660    # 3 / d2 for n=2
+XMR_MR_CONSTANT = 3.268     # D4 for n=2
+
+
+@dataclass(frozen=True)
+class XmRPoint:
+    """One individual observation in an XmR chart."""
+    ts: datetime
+    value: float           # the individual (e.g. median RTT for the bin)
+    samples: int           # number of probes that produced the value
+    mr: float | None       # moving range to the previous point; None for first
+    signals: list[str]     # which Wheeler rules fired AT this point
+
+
+@dataclass(frozen=True)
+class XmRChart:
+    """A complete XmR chart for one (target, kind) pair."""
+    target: str
+    label: str
+    kind: str
+    bucket_size_s: int
+    center: float | None         # mean of individuals
+    unpl: float | None           # upper natural process limit
+    lnpl: float | None           # lower natural process limit (clamped at 0)
+    mr_bar: float | None         # mean moving range
+    mr_url: float | None         # URL for the MR chart (3.268 · MR-bar)
+    points: list[XmRPoint]
+
+
+def _xmr_bucket_pings(
+    pings: Iterable[PingResult],
+    *,
+    window_start: datetime,
+    bucket_size_s: int,
+) -> dict[tuple[str, str], list[tuple[datetime, float, int]]]:
+    """Group successful pings into (target, kind) -> sorted [(ts, p50, n), ...].
+
+    The "individual" we chart is the median of successful RTTs in the bucket.
+    Failed probes count toward ``samples`` only via the caller's bookkeeping;
+    here we just want a stable, robust per-bucket value. A bucket with no
+    successful probes is omitted from the series (treated as a gap, not zero).
+    """
+    if bucket_size_s <= 0:
+        raise ValueError("bucket_size_s must be > 0")
+    grouped: dict[tuple[int, str, str], list[PingResult]] = {}
+    labels: dict[str, str] = {}
+    for p in pings:
+        if p.latency_ms is None or not p.success:
+            continue
+        idx = int((p.ts - window_start).total_seconds() // bucket_size_s)
+        grouped.setdefault((idx, p.target, p.kind), []).append(p)
+        labels.setdefault(p.target, p.label)
+    out: dict[tuple[str, str], list[tuple[datetime, float, int]]] = {}
+    delta = timedelta(seconds=bucket_size_s)
+    for (idx, target, kind), items in grouped.items():
+        latencies = sorted(p.latency_ms for p in items)
+        median = _pct(latencies, 50)
+        ts = window_start + delta * idx
+        out.setdefault((target, kind), []).append((ts, median, len(latencies)))
+    for series in out.values():
+        series.sort(key=lambda t: t[0])
+    return out
+
+
+def _xmr_signals(values: list[float], center: float, unpl: float, lnpl: float) -> list[list[str]]:
+    """Compute per-point Wheeler signal labels. Pure function over the series.
+
+    Returns a list of the same length as ``values``; each element is the list
+    of rule names firing at that point (typically empty).
+    """
+    n = len(values)
+    out: list[list[str]] = [[] for _ in range(n)]
+    if n == 0:
+        return out
+    # Rule 1: point outside the natural process limits.
+    for i, v in enumerate(values):
+        if v > unpl or v < lnpl:
+            out[i].append("outside_limits")
+    # Rule 2: 8 in a row on the same side of the centre line. Mark the 8th
+    # and every continuation point so the user sees the full run highlighted.
+    side = [0] * n
+    for i, v in enumerate(values):
+        if v > center:
+            side[i] = 1
+        elif v < center:
+            side[i] = -1
+        # equal to centre breaks the run
+    run = 0
+    last_side = 0
+    for i, s in enumerate(side):
+        if s != 0 and s == last_side:
+            run += 1
+        elif s != 0:
+            run = 1
+            last_side = s
+        else:
+            run = 0
+            last_side = 0
+        if run >= 8:
+            out[i].append("run_of_8")
+    # Rule 3: three of four beyond the 2/3 line (two-sigma) on the same side.
+    # 2/3 line = centre + (2/3) * (UNPL - centre)  — works symmetrically.
+    upper_2s = center + (2.0 / 3.0) * (unpl - center)
+    lower_2s = center - (2.0 / 3.0) * (center - lnpl)
+    for i in range(3, n):
+        window_ = values[i - 3 : i + 1]
+        above = sum(1 for v in window_ if v > upper_2s)
+        below = sum(1 for v in window_ if v < lower_2s)
+        if above >= 3 or below >= 3:
+            out[i].append("two_sigma_3of4")
+    # Rule 4: six points steadily increasing or steadily decreasing.
+    for i in range(5, n):
+        win = values[i - 5 : i + 1]
+        if all(win[j] < win[j + 1] for j in range(5)):
+            out[i].append("trend_up_6")
+        elif all(win[j] > win[j + 1] for j in range(5)):
+            out[i].append("trend_down_6")
+    return out
+
+
+def xmr_charts(
+    pings: Iterable[PingResult],
+    *,
+    window_start: datetime,
+    bucket_size_s: int,
+    kind: str = "icmp",
+    min_points: int = 10,
+) -> list[XmRChart]:
+    """Build one XmR chart per (target, kind) above ``min_points``.
+
+    ``kind`` filters which probe kind enters the chart; XmR is per-process,
+    and mixing ICMP and TCP RTT into one chart would conflate two processes.
+    Default is ICMP because the user asked for ICMP control charts.
+
+    Limits are computed from the values *visible in the window*. This is a
+    pragmatic compromise: Wheeler prefers limits anchored to a stable baseline
+    period. Future enhancement: accept an explicit baseline window.
+    """
+    grouped = _xmr_bucket_pings(
+        (p for p in pings if p.kind == kind),
+        window_start=window_start,
+        bucket_size_s=bucket_size_s,
+    )
+    label_lookup = {p.target: p.label for p in pings if p.kind == kind}
+    out: list[XmRChart] = []
+    for (target, k), series in grouped.items():
+        if len(series) < min_points:
+            continue
+        values = [v for _, v, _ in series]
+        ts_list = [t for t, _, _ in series]
+        samples_list = [n for _, _, n in series]
+        moving_ranges = [abs(values[i] - values[i - 1]) for i in range(1, len(values))]
+        mr_bar = statistics.fmean(moving_ranges) if moving_ranges else 0.0
+        center = statistics.fmean(values)
+        unpl = center + XMR_NPL_CONSTANT * mr_bar
+        # RTT can't go negative; Wheeler clamps the lower limit at the
+        # physical floor when one exists.
+        lnpl = max(0.0, center - XMR_NPL_CONSTANT * mr_bar)
+        mr_url = XMR_MR_CONSTANT * mr_bar
+        per_point_signals = _xmr_signals(values, center, unpl, lnpl)
+        points: list[XmRPoint] = []
+        for i, ((ts, v, n), sigs) in enumerate(zip(series, per_point_signals)):
+            mr_i = moving_ranges[i - 1] if i > 0 else None
+            # MR chart signal: range beyond URL means an unusually large
+            # jump from the previous point — append as its own rule.
+            if mr_i is not None and mr_i > mr_url:
+                sigs = [*sigs, "mr_outside_url"]
+            points.append(
+                XmRPoint(
+                    ts=ts,
+                    value=v,
+                    samples=n,
+                    mr=mr_i,
+                    signals=sigs,
+                )
+            )
+        out.append(
+            XmRChart(
+                target=target,
+                label=label_lookup.get(target, target),
+                kind=k,
+                bucket_size_s=bucket_size_s,
+                center=center,
+                unpl=unpl,
+                lnpl=lnpl,
+                mr_bar=mr_bar,
+                mr_url=mr_url,
+                points=points,
+            )
+        )
+    out.sort(key=lambda c: (c.kind, c.label))
+    return out
+
+
 __all__ = [
     "Bucket",
     "CalendarRow",
@@ -637,6 +854,10 @@ __all__ = [
     "SEVERITY_NONE",
     "SEVERITY_NO_DATA",
     "SEVERITY_SEVERE",
+    "XMR_MR_CONSTANT",
+    "XMR_NPL_CONSTANT",
+    "XmRChart",
+    "XmRPoint",
     "bucket_outages",
     "bucket_size_for_window",
     "buffer_bloat_score",
@@ -650,4 +871,5 @@ __all__ = [
     "uptime_pct",
     "video_call_uptime_pct",
     "window",
+    "xmr_charts",
 ]

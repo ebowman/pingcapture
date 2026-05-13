@@ -365,3 +365,125 @@ def test_downsample_latency_counts_failures(now: datetime) -> None:
 def test_downsample_latency_zero_bucket_returns_empty(now: datetime) -> None:
     pings = [mk_ping(ts=now, latency_ms=10.0)]
     assert downsample_latency(pings, window_start=now, bucket_size_s=0) == []
+
+
+# ---------------------------------------------------------------------------
+# XmR (Wheeler) control charts
+# ---------------------------------------------------------------------------
+
+from pingcapture.analytics import (
+    XMR_MR_CONSTANT,
+    XMR_NPL_CONSTANT,
+    xmr_charts,
+)
+
+
+def _xmr_pings(now: datetime, values: list[float], *, bucket_s: int = 300,
+               target: str = "1.1.1.1", label: str = "Cloudflare",
+               kind: str = "icmp") -> list:
+    """One successful ping per bucket, RTT = values[i]. Drives bin medians."""
+    return [
+        mk_ping(
+            ts=now + timedelta(seconds=i * bucket_s),
+            target=target, label=label, kind=kind,
+            success=True, latency_ms=v,
+        )
+        for i, v in enumerate(values)
+    ]
+
+
+def test_xmr_in_control_no_signals(now: datetime) -> None:
+    # 20 points hovering tightly around 10ms — should be all in-control.
+    vals = [10.0, 10.5, 9.8, 10.2, 10.1, 9.9, 10.3, 10.4, 9.7, 10.0,
+            10.2, 9.9, 10.1, 10.5, 9.8, 10.3, 10.0, 10.2, 9.9, 10.1]
+    charts = xmr_charts(_xmr_pings(now, vals), window_start=now, bucket_size_s=300)
+    assert len(charts) == 1
+    c = charts[0]
+    assert c.target == "1.1.1.1"
+    assert c.kind == "icmp"
+    assert c.center is not None and 9.5 < c.center < 10.5
+    # Limits derived from the moving range itself.
+    assert c.unpl == c.center + XMR_NPL_CONSTANT * c.mr_bar
+    assert c.lnpl == max(0.0, c.center - XMR_NPL_CONSTANT * c.mr_bar)
+    assert c.mr_url == XMR_MR_CONSTANT * c.mr_bar
+    assert len(c.points) == len(vals)
+    # First point has no moving range to a predecessor.
+    assert c.points[0].mr is None
+    assert all(p.signals == [] for p in c.points)
+
+
+def test_xmr_flags_point_outside_limits(now: datetime) -> None:
+    # 15 baseline points, then one obvious outlier.
+    vals = [10.0] * 15 + [200.0]
+    charts = xmr_charts(_xmr_pings(now, vals), window_start=now, bucket_size_s=300)
+    assert len(charts) == 1
+    sigs = charts[0].points[-1].signals
+    assert "outside_limits" in sigs
+    # The 200ms jump from a 10ms baseline also blows past the MR URL.
+    assert "mr_outside_url" in sigs
+
+
+def test_xmr_flags_run_of_eight(now: datetime) -> None:
+    # 4 above, 4 below, then 8 above — the 8th of the run should fire.
+    vals = ([12, 8] * 4) + [12, 12, 12, 12, 12, 12, 12, 12]
+    charts = xmr_charts(_xmr_pings(now, vals), window_start=now, bucket_size_s=300)
+    flagged = [i for i, p in enumerate(charts[0].points) if "run_of_8" in p.signals]
+    # Eight-in-a-row starts at index len(vals) - 8, so the 8th of the run is
+    # the last point; continuations would also flag, but there are none here.
+    assert flagged == [len(vals) - 1]
+
+
+def test_xmr_flags_trend_up_six(now: datetime) -> None:
+    # 6 strictly-increasing points after a flat baseline.
+    vals = [10.0] * 10 + [11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
+    charts = xmr_charts(_xmr_pings(now, vals), window_start=now, bucket_size_s=300)
+    last = charts[0].points[-1]
+    assert "trend_up_6" in last.signals
+
+
+def test_xmr_lnpl_clamped_at_zero(now: datetime) -> None:
+    # Very noisy series whose mean - 2.66*MR-bar would be negative; the
+    # LNPL should clamp at zero (RTT can't be negative).
+    vals = [1.0, 50.0] * 10  # alternating big/small
+    charts = xmr_charts(_xmr_pings(now, vals), window_start=now, bucket_size_s=300)
+    assert charts[0].lnpl == 0.0
+
+
+def test_xmr_filters_by_kind(now: datetime) -> None:
+    # ICMP + TCP probes; default kind=icmp keeps only ICMP.
+    icmp = _xmr_pings(now, [10.0] * 12, kind="icmp", target="a", label="A")
+    tcp = _xmr_pings(now, [20.0] * 12, kind="tcp", target="a", label="A")
+    icmp_only = xmr_charts(icmp + tcp, window_start=now, bucket_size_s=300, kind="icmp")
+    assert len(icmp_only) == 1
+    assert icmp_only[0].kind == "icmp"
+    assert 9.5 < icmp_only[0].center < 10.5
+
+
+def test_xmr_skips_targets_below_min_points(now: datetime) -> None:
+    # Only 5 bins — below the default min_points=10.
+    out = xmr_charts(_xmr_pings(now, [10.0] * 5), window_start=now, bucket_size_s=300)
+    assert out == []
+
+
+def test_xmr_one_chart_per_target(now: datetime) -> None:
+    a = _xmr_pings(now, [10.0] * 12, target="a", label="A")
+    b = _xmr_pings(now, [50.0] * 12, target="b", label="B")
+    charts = xmr_charts(a + b, window_start=now, bucket_size_s=300)
+    assert {c.target for c in charts} == {"a", "b"}
+    by_target = {c.target: c for c in charts}
+    assert by_target["a"].center is not None and 9.5 < by_target["a"].center < 10.5
+    assert by_target["b"].center is not None and 49.5 < by_target["b"].center < 50.5
+
+
+def test_xmr_excludes_failed_probes(now: datetime) -> None:
+    # 12 successful probes + a scattered failure — failures don't enter the
+    # individuals series, but the chart still builds from the 12 successes.
+    pings = _xmr_pings(now, [10.0] * 12)
+    pings.append(mk_ping(
+        ts=now + timedelta(seconds=6 * 300), success=False, error="timeout",
+        latency_ms=None,
+    ))
+    charts = xmr_charts(pings, window_start=now, bucket_size_s=300)
+    assert len(charts) == 1
+    # 12 distinct buckets, one point each.
+    assert len(charts[0].points) == 12
