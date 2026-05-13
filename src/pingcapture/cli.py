@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -133,6 +134,10 @@ def run(ctx: click.Context, port: int | None, host: str | None) -> None:
     )
 
 
+def _run_pid_path(cfg: Config) -> Path:
+    return cfg.db_path.parent / "run.pid"
+
+
 async def _run(
     cfg: Config, *, config_path: Path | None, verbose: bool,
     port: int | None, host: str | None,
@@ -141,14 +146,23 @@ async def _run(
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
     store = Store(cfg.db_path)
     stop = asyncio.Event()
+    restart_console = asyncio.Event()
 
     def _handle_signal(signum: int) -> None:
         log.info("received signal %d, shutting down", signum)
         stop.set()
 
+    def _handle_sigusr1() -> None:
+        log.info("received SIGUSR1, bouncing console child")
+        restart_console.set()
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal, sig)
+    loop.add_signal_handler(signal.SIGUSR1, _handle_sigusr1)
+
+    pid_path = _run_pid_path(cfg)
+    pid_path.write_text(str(os.getpid()), encoding="utf-8")
 
     log.info("pingcapture %s starting (db=%s)", __version__, cfg.db_path)
     log.info("console at http://%s:%d", cfg.web_host, cfg.web_port)
@@ -160,25 +174,37 @@ async def _run(
             run_pinger(cfg, store, stop),
             run_mtr_scheduler(cfg, store, stop),
             _supervise_console(
-                stop, config_path=config_path, verbose=verbose,
+                stop, restart_console, cfg,
+                config_path=config_path, verbose=verbose,
                 port=port, host=host,
             ),
         )
     finally:
         store.close()
+        try:
+            pid_path.unlink()
+        except FileNotFoundError:
+            pass
         log.info("pingcapture stopped")
 
 
 async def _supervise_console(
-    stop: asyncio.Event, *, config_path: Path | None, verbose: bool,
+    stop: asyncio.Event, restart: asyncio.Event, cfg: Config, *,
+    config_path: Path | None, verbose: bool,
     port: int | None, host: str | None,
 ) -> None:
     """Run ``pingcapture console`` as a child process and keep it alive.
 
     Stdout/stderr are inherited so launchd's log files capture both processes.
-    On exit, the child is sent SIGTERM and given a few seconds to drain.
+    On stop, the child is sent SIGTERM and given a few seconds to drain.
+    When ``restart`` is set (e.g. via SIGUSR1 -> 'pingcapture restart-console'),
+    the current child is terminated and a fresh one is started immediately
+    with no backoff. Backoff only applies to crashes, and is reset on clean
+    exit (rc=0 or a SIGTERM/SIGINT-shaped negative rc).
     """
     log = logging.getLogger("pingcapture.console")
+    effective_host = host if host is not None else cfg.web_host
+    effective_port = port if port is not None else cfg.web_port
     cmd = [sys.executable, "-m", "pingcapture.cli"]
     if verbose:
         cmd.append("-v")
@@ -190,40 +216,75 @@ async def _supervise_console(
     if host is not None:
         cmd.extend(["--host", host])
 
+    async def _wait_port_free() -> None:
+        """Poll until the child's port is bindable. The just-killed child's
+        socket lingers briefly in TIME_WAIT; without this wait the next
+        child trips its pre-flight port_is_free check and exits with an
+        error, kicking us into a multi-second crash-loop backoff."""
+        for _ in range(20):  # ~10 s total
+            if port_is_free(effective_host, effective_port):
+                return
+            await asyncio.sleep(0.5)
+
     backoff_s = 1.0
     while not stop.is_set():
         log.info("starting web console child: %s", " ".join(cmd))
         proc = await asyncio.create_subprocess_exec(*cmd)
-        # Wait for either the child to exit or the stop event.
+        # Wait for: child exit, stop, or user-requested restart.
         wait_child = asyncio.create_task(proc.wait())
         wait_stop = asyncio.create_task(stop.wait())
+        wait_restart = asyncio.create_task(restart.wait())
         done, _ = await asyncio.wait(
-            {wait_child, wait_stop}, return_when=asyncio.FIRST_COMPLETED
+            {wait_child, wait_stop, wait_restart},
+            return_when=asyncio.FIRST_COMPLETED,
         )
         if wait_stop in done:
-            wait_child.cancel()
+            for t in (wait_child, wait_restart):
+                t.cancel()
             log.info("stopping web console child (pid=%d)", proc.pid)
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except TimeoutError:
-                log.warning("web console did not exit in 5s, killing")
-                proc.kill()
-                await proc.wait()
+            await _terminate_child(proc, log)
             return
-        # Child exited on its own — restart with bounded backoff.
-        wait_stop.cancel()
+        if wait_restart in done:
+            for t in (wait_child, wait_stop):
+                t.cancel()
+            log.info("bouncing web console child (pid=%d)", proc.pid)
+            await _terminate_child(proc, log)
+            restart.clear()
+            backoff_s = 1.0
+            await _wait_port_free()
+            continue
+        # Child exited on its own.
+        for t in (wait_stop, wait_restart):
+            t.cancel()
         rc = proc.returncode
-        log.warning("web console exited rc=%s, restarting in %.1fs", rc, backoff_s)
+        if rc in (0, -signal.SIGTERM, -signal.SIGINT):
+            # Clean exit — treat the next start as fresh.
+            log.info("web console exited cleanly rc=%s, restarting", rc)
+            backoff_s = 1.0
+            await _wait_port_free()
+            continue
+        log.warning("web console crashed rc=%s, restarting in %.1fs", rc, backoff_s)
         try:
             await asyncio.wait_for(stop.wait(), timeout=backoff_s)
             return  # stop was set during the backoff
         except TimeoutError:
             pass
         backoff_s = min(backoff_s * 2, 30.0)
+
+
+async def _terminate_child(
+    proc: asyncio.subprocess.Process, log: logging.Logger
+) -> None:
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except TimeoutError:
+        log.warning("web console did not exit in 5s, killing")
+        proc.kill()
+        await proc.wait()
 
 
 @main.command()
@@ -259,6 +320,36 @@ def console(cfg: Config, port: int | None, host: str | None) -> None:
     click.echo(f"console at http://{cfg.web_host}:{cfg.web_port}")
     click.echo(f"report  at http://{cfg.web_host}:{cfg.web_port}/report?lang=en&since=7d")
     uvicorn.run(app, host=cfg.web_host, port=cfg.web_port, log_level="warning")
+
+
+@main.command("restart-console")
+@click.pass_obj
+def restart_console(cfg: Config) -> None:
+    """Bounce the web console child of a running ``pingcapture run``.
+
+    Signals the supervisor (SIGUSR1) to terminate its current console child
+    and start a fresh one immediately — useful when you've changed code or
+    static assets and want the new version live without restarting the
+    whole pinger/mtr loop.
+    """
+    pid_path = _run_pid_path(cfg)
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        click.echo(
+            f"no run.pid at {pid_path} — is 'pingcapture run' running?",
+            err=True,
+        )
+        sys.exit(1)
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        click.echo(
+            f"pid {pid} from {pid_path} is not running (stale pid file)",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(f"sent SIGUSR1 to pingcapture run (pid={pid})")
 
 
 @main.group()
