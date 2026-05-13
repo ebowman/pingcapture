@@ -38,7 +38,7 @@ class Translator:
 
 
 def supported_languages() -> list[str]:
-    return ["en", "de"]
+    return ["en", "de", "ga"]
 
 
 __all__ = ["MissingTranslationError", "Translator", "supported_languages"]
