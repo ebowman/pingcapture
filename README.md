@@ -88,7 +88,9 @@ pingcapture service uninstall
 
 ## Configure
 
-`pingcapture init` writes `~/.config/pingcapture/config.toml` with defaults that work without editing. The DB lives at `~/Library/Application Support/pingcapture/pingcapture.sqlite`. Override either with `PINGCAPTURE_CONFIG` or `PINGCAPTURE_DATA_DIR`.
+`pingcapture init` writes `~/.config/pingcapture/config.toml` with defaults that work without editing, and prints the URL the console will live at. If the default port (`8765`) is already taken, `init` scans upward and persists the first free port it finds into the TOML — so subsequent runs are predictable. The DB lives at `~/Library/Application Support/pingcapture/pingcapture.sqlite`. Override either with `PINGCAPTURE_CONFIG` or `PINGCAPTURE_DATA_DIR`.
+
+To change the port for a single run without editing the config, pass `--port` (also `--host`): `pingcapture run --port 8766` or `pingcapture console --port 8766`. If the configured port is in use at startup, the console exits with an actionable hint instead of a uvicorn traceback.
 
 ## Test
 

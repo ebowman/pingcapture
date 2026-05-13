@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import signal
 import sys
@@ -17,6 +18,8 @@ from .config import (
     Config,
     default_config_path,
     default_data_dir,
+    pick_free_port,
+    port_is_free,
 )
 from .mtr import run_mtr_scheduler
 from .pinger import run_pinger
@@ -57,21 +60,58 @@ def init() -> None:
     data_dir = default_data_dir()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    if cfg_path.exists():
-        click.echo(f"config already exists: {cfg_path}")
-    else:
+    fresh_config = not cfg_path.exists()
+    if fresh_config:
         cfg_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
         click.echo(f"wrote config: {cfg_path}")
+    else:
+        click.echo(f"config already exists: {cfg_path}")
     click.echo(f"data dir:    {data_dir}")
-    # Touch the DB to confirm we can write there.
+
     cfg = Config.load()
     Store(cfg.db_path).close()
     click.echo(f"db:          {cfg.db_path}")
 
+    # Port selection happens once, here, and is persisted to the TOML so
+    # subsequent runs are predictable. We never auto-bump at run time.
+    chosen_port = cfg.web_port
+    if fresh_config and not port_is_free(cfg.web_host, cfg.web_port):
+        alt = pick_free_port(cfg.web_host, cfg.web_port + 1)
+        if alt is not None:
+            old_line = f"web_port = {cfg.web_port}"
+            new_line = f"web_port = {alt}"
+            text = cfg_path.read_text(encoding="utf-8")
+            if old_line in text:
+                cfg_path.write_text(text.replace(old_line, new_line, 1), encoding="utf-8")
+                click.echo(
+                    f"port {cfg.web_port} was in use; chose {alt} "
+                    f"(edit web_port in {cfg_path} to override)"
+                )
+                chosen_port = alt
+            else:
+                click.echo(
+                    f"⚠ port {cfg.web_port} is in use but couldn't rewrite "
+                    f"{cfg_path}; edit web_port manually"
+                )
+        else:
+            click.echo(
+                f"⚠ port {cfg.web_port} is in use and no nearby free port found; "
+                f"edit web_port in {cfg_path}"
+            )
+    elif not fresh_config and not port_is_free(cfg.web_host, cfg.web_port):
+        click.echo(
+            f"⚠ port {cfg.web_port} appears to be in use; "
+            f"edit web_port in {cfg_path} or pass --port at run time"
+        )
+
+    click.echo(f"console:     http://{cfg.web_host}:{chosen_port}")
+
 
 @main.command()
+@click.option("--port", type=int, default=None, help="Override web_port for this run.")
+@click.option("--host", "host", type=str, default=None, help="Override web_host for this run.")
 @click.pass_context
-def run(ctx: click.Context) -> None:
+def run(ctx: click.Context, port: int | None, host: str | None) -> None:
     """Run the pinger + mtr scheduler, with the web console in a child process.
 
     The web server runs in a separate process so that heavy HTTP work (large
@@ -80,13 +120,22 @@ def run(ctx: click.Context) -> None:
     produce false outages — see pingcapture-vih.
     """
     cfg: Config = ctx.obj
+    if port is not None or host is not None:
+        cfg = dataclasses.replace(
+            cfg,
+            web_port=port if port is not None else cfg.web_port,
+            web_host=host if host is not None else cfg.web_host,
+        )
     config_path: Path | None = ctx.meta.get("config_path")
     verbose: bool = ctx.meta.get("verbose", False)
-    asyncio.run(_run(cfg, config_path=config_path, verbose=verbose))
+    asyncio.run(
+        _run(cfg, config_path=config_path, verbose=verbose, port=port, host=host)
+    )
 
 
 async def _run(
-    cfg: Config, *, config_path: Path | None, verbose: bool
+    cfg: Config, *, config_path: Path | None, verbose: bool,
+    port: int | None, host: str | None,
 ) -> None:
     log = logging.getLogger("pingcapture")
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +159,10 @@ async def _run(
         await asyncio.gather(
             run_pinger(cfg, store, stop),
             run_mtr_scheduler(cfg, store, stop),
-            _supervise_console(stop, config_path=config_path, verbose=verbose),
+            _supervise_console(
+                stop, config_path=config_path, verbose=verbose,
+                port=port, host=host,
+            ),
         )
     finally:
         store.close()
@@ -118,7 +170,8 @@ async def _run(
 
 
 async def _supervise_console(
-    stop: asyncio.Event, *, config_path: Path | None, verbose: bool
+    stop: asyncio.Event, *, config_path: Path | None, verbose: bool,
+    port: int | None, host: str | None,
 ) -> None:
     """Run ``pingcapture console`` as a child process and keep it alive.
 
@@ -132,6 +185,10 @@ async def _supervise_console(
     if config_path is not None:
         cmd.extend(["--config", str(config_path)])
     cmd.append("console")
+    if port is not None:
+        cmd.extend(["--port", str(port)])
+    if host is not None:
+        cmd.extend(["--host", host])
 
     backoff_s = 1.0
     while not stop.is_set():
@@ -170,9 +227,34 @@ async def _supervise_console(
 
 
 @main.command()
+@click.option("--port", type=int, default=None, help="Override web_port for this run.")
+@click.option("--host", "host", type=str, default=None, help="Override web_host for this run.")
 @click.pass_obj
-def console(cfg: Config) -> None:
+def console(cfg: Config, port: int | None, host: str | None) -> None:
     """Serve the local web console (dashboard + report)."""
+    if port is not None or host is not None:
+        cfg = dataclasses.replace(
+            cfg,
+            web_port=port if port is not None else cfg.web_port,
+            web_host=host if host is not None else cfg.web_host,
+        )
+    # Pre-flight bind probe. uvicorn logs ERROR and exits non-zero on bind
+    # failure, but the traceback is unhelpful for the common "port in use"
+    # case. Probing here lets us print an actionable hint instead.
+    if not port_is_free(cfg.web_host, cfg.web_port):
+        click.echo(
+            f"error: port {cfg.web_port} is already in use on {cfg.web_host}.",
+            err=True,
+        )
+        click.echo(
+            f"  try: pingcapture console --port {cfg.web_port + 1}",
+            err=True,
+        )
+        click.echo(
+            f"  or edit web_port in {default_config_path()}",
+            err=True,
+        )
+        sys.exit(1)
     app = create_app(cfg)
     click.echo(f"console at http://{cfg.web_host}:{cfg.web_port}")
     click.echo(f"report  at http://{cfg.web_host}:{cfg.web_port}/report?lang=en&since=7d")

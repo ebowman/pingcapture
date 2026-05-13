@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,6 +112,32 @@ def _parse_targets(
     return [PingTarget(host=t["host"], label=t.get("label", t["host"])) for t in raw]
 
 
+def port_is_free(host: str, port: int) -> bool:
+    """Return True if (host, port) can be bound right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def pick_free_port(host: str, start: int, *, attempts: int = 50) -> int | None:
+    """Return the first free port at-or-after ``start``, or None if none found.
+
+    Scans ``start, start+1, ..., start+attempts-1``. The 50-port window is
+    enough to skip past a small cluster of common dev servers without wandering
+    far from the documented default.
+    """
+    for offset in range(attempts):
+        candidate = start + offset
+        if candidate > 65535:
+            return None
+        if port_is_free(host, candidate):
+            return candidate
+    return None
+
+
 DEFAULT_CONFIG_TOML = """\
 # pingcapture configuration. All fields optional; defaults are sensible.
 
@@ -125,6 +152,9 @@ mtr_interval_s  = 900.0
 mtr_cycles      = 10
 
 web_host = "127.0.0.1"
+# Local-only dashboard port. Change if 8765 conflicts.
+# Pick anything 1024-65535 that's not in use. Common collisions:
+# 3000/8000/8080 (dev servers), 5000 (macOS AirPlay receiver).
 web_port = 8765
 
 [[icmp_targets]]
