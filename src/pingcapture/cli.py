@@ -248,10 +248,9 @@ async def _supervise_console(
             for t in (wait_child, wait_stop):
                 t.cancel()
             log.info("bouncing web console child (pid=%d)", proc.pid)
-            await _terminate_child(proc, log)
+            await _terminate_child(proc, log, force=True)
             restart.clear()
             backoff_s = 1.0
-            await _wait_port_free()
             continue
         # Child exited on its own.
         for t in (wait_stop, wait_restart):
@@ -273,8 +272,23 @@ async def _supervise_console(
 
 
 async def _terminate_child(
-    proc: asyncio.subprocess.Process, log: logging.Logger
+    proc: asyncio.subprocess.Process, log: logging.Logger, *, force: bool = False
 ) -> None:
+    """Stop the console child.
+
+    ``force=True`` goes straight to SIGKILL — used for user-initiated bounces
+    where we don't want to wait for uvicorn to drain idle browser keepalives
+    (it would hold the listen port for tens of seconds). The web server is
+    stateless; clients will reconnect on their own. ``force=False`` is the
+    polite path used at daemon shutdown.
+    """
+    if force:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        await proc.wait()
+        return
     try:
         proc.terminate()
     except ProcessLookupError:

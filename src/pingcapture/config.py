@@ -113,8 +113,17 @@ def _parse_targets(
 
 
 def port_is_free(host: str, port: int) -> bool:
-    """Return True if (host, port) can be bound right now."""
+    """Return True if (host, port) can be bound right now.
+
+    Sets SO_REUSEADDR to match uvicorn's bind behavior. Without this, the
+    kernel rejects the probe when zombie ESTABLISHED sockets from a killed
+    listener are still around (typical right after the supervisor bounces
+    the console child while a browser had keepalive connections open),
+    causing a false 'port in use' and a multi-second crash-loop in the
+    supervisor's backoff. uvicorn itself would bind fine.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
         except OSError:
