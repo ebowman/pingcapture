@@ -146,11 +146,16 @@ def uptime_pct(pings: Iterable[PingResult]) -> float:
 # Probes here measure round-trip, so the latency budget doubles to 300 ms.
 # Jitter is measured as IQR (p75 - p25) rather than stddev, because per-minute
 # probe counts are small (~12) and stddev is too easily moved by a single
-# outlier — a real video call would not notice one isolated RTT spike.
+# outlier — a real video call would not notice one isolated RTT spike. The
+# IQR threshold is loosened from the ITU 30 ms (which targets one-way
+# inter-packet variation on managed networks) to 75 ms, since round-trip
+# probes over the open internet have naturally higher spread. The loss
+# check looks only at TCP probes — ICMP-only loss is upstream rate-limiting,
+# not user-visible (see detect_outages for the same rule).
 VIDEO_CALL_WINDOW_S = 60
 VIDEO_CALL_MAX_LOSS_PCT = 1.0
 VIDEO_CALL_MAX_P95_RTT_MS = 300.0
-VIDEO_CALL_MAX_JITTER_MS = 30.0
+VIDEO_CALL_MAX_JITTER_MS = 75.0
 
 
 def video_call_uptime_pct(
@@ -162,7 +167,9 @@ def video_call_uptime_pct(
 
     A window is BAD if any of:
       - it overlaps a detected outage,
-      - packet loss in the window exceeds VIDEO_CALL_MAX_LOSS_PCT,
+      - TCP packet loss in the window exceeds VIDEO_CALL_MAX_LOSS_PCT
+        (ICMP-only loss is ignored, matching the outage detector — it
+        usually reflects upstream ICMP rate-limiting, not real loss),
       - p95 RTT in the window exceeds VIDEO_CALL_MAX_P95_RTT_MS,
       - inter-quartile RTT spread (p75-p25) exceeds VIDEO_CALL_MAX_JITTER_MS.
 
@@ -191,10 +198,12 @@ def video_call_uptime_pct(
     for bucket_start, items in buckets.items():
         if _overlaps_outage(bucket_start):
             continue
-        failed = sum(1 for p in items if not p.success)
-        loss_pct = 100.0 * failed / len(items)
-        if loss_pct > VIDEO_CALL_MAX_LOSS_PCT:
-            continue
+        tcp_items = [p for p in items if p.kind == "tcp"]
+        if tcp_items:
+            tcp_failed = sum(1 for p in tcp_items if not p.success)
+            tcp_loss_pct = 100.0 * tcp_failed / len(tcp_items)
+            if tcp_loss_pct > VIDEO_CALL_MAX_LOSS_PCT:
+                continue
         latencies = sorted(
             p.latency_ms for p in items
             if p.success and p.latency_ms is not None

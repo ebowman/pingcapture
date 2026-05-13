@@ -82,18 +82,38 @@ def test_video_uptime_excludes_outage_window(now: datetime) -> None:
 
 
 def test_video_uptime_high_loss_window_is_bad(now: datetime) -> None:
-    # Minute 0 is clean. Minute 1 has 2 failures in 12 probes (~16% loss) > 1%.
+    # Minute 0 is clean. Minute 1 has 2 TCP failures in 6 TCP probes
+    # (~33% TCP loss) > 1%. ICMP probes (other 6) all succeed.
     good = _good_minute(now, minute=0)
     bad_base = now + timedelta(minutes=1)
     bad = []
     for i in range(12):
         kind = ("icmp", "tcp")[i % 2]
+        # i=3 and i=7 are both TCP (odd indices)
         success = i not in (3, 7)
         bad.append(mk_ping(
             ts=bad_base + timedelta(seconds=i * 5),
             success=success, kind=kind, latency_ms=20.0,
         ))
     assert video_call_uptime_pct(good + bad, []) == 50.0
+
+
+def test_video_uptime_icmp_only_loss_is_good(now: datetime) -> None:
+    # Regression: a cluster of ICMP failures with no TCP failures used to
+    # flag the minute as 'down', even though the outage detector ignores
+    # the same pattern (upstream ICMP rate-limiting, not user-visible loss).
+    good = _good_minute(now, minute=0)
+    bad_base = now + timedelta(minutes=1)
+    bad = []
+    for i in range(12):
+        kind = ("icmp", "tcp")[i % 2]
+        # Kill 3 of the 6 ICMP probes; every TCP probe succeeds.
+        success = not (kind == "icmp" and i in (2, 4, 8))
+        bad.append(mk_ping(
+            ts=bad_base + timedelta(seconds=i * 5),
+            success=success, kind=kind, latency_ms=20.0,
+        ))
+    assert video_call_uptime_pct(good + bad, []) == 100.0
 
 
 def test_video_uptime_high_p95_latency_is_bad(now: datetime) -> None:
@@ -114,7 +134,7 @@ def test_video_uptime_high_p95_latency_is_bad(now: datetime) -> None:
 
 def test_video_uptime_high_jitter_is_bad(now: datetime) -> None:
     # Minute 0 is clean. Minute 1 alternates 20/120ms — bottom half clusters
-    # at 20, top half at 120, so IQR ≈ 100ms (well over the 30ms threshold).
+    # at 20, top half at 120, so IQR ≈ 100ms (well over the 75ms threshold).
     # Each sample is still under the 300ms p95 cap.
     good = _good_minute(now, minute=0)
     bad_base = now + timedelta(minutes=1)
