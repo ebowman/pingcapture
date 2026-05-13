@@ -144,6 +144,9 @@ def uptime_pct(pings: Iterable[PingResult]) -> float:
 # Video-call uptime thresholds. ITU/Cisco guidance for acceptable
 # interactive voice/video is one-way ≤150 ms latency, ≤30 ms jitter, ≤1 % loss.
 # Probes here measure round-trip, so the latency budget doubles to 300 ms.
+# Jitter is measured as IQR (p75 - p25) rather than stddev, because per-minute
+# probe counts are small (~12) and stddev is too easily moved by a single
+# outlier — a real video call would not notice one isolated RTT spike.
 VIDEO_CALL_WINDOW_S = 60
 VIDEO_CALL_MAX_LOSS_PCT = 1.0
 VIDEO_CALL_MAX_P95_RTT_MS = 300.0
@@ -161,7 +164,7 @@ def video_call_uptime_pct(
       - it overlaps a detected outage,
       - packet loss in the window exceeds VIDEO_CALL_MAX_LOSS_PCT,
       - p95 RTT in the window exceeds VIDEO_CALL_MAX_P95_RTT_MS,
-      - jitter (stddev of RTT) in the window exceeds VIDEO_CALL_MAX_JITTER_MS.
+      - inter-quartile RTT spread (p75-p25) exceeds VIDEO_CALL_MAX_JITTER_MS.
 
     Windows with no probes are excluded from the denominator — gaps in
     capture don't count for or against uptime.
@@ -200,9 +203,9 @@ def video_call_uptime_pct(
             p95 = _pct(latencies, 95)
             if p95 > VIDEO_CALL_MAX_P95_RTT_MS:
                 continue
-            if len(latencies) >= 2:
-                jitter = statistics.stdev(latencies)
-                if jitter > VIDEO_CALL_MAX_JITTER_MS:
+            if len(latencies) >= 4:
+                iqr = _pct(latencies, 75) - _pct(latencies, 25)
+                if iqr > VIDEO_CALL_MAX_JITTER_MS:
                     continue
         good += 1
 

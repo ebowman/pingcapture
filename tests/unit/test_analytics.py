@@ -97,22 +97,25 @@ def test_video_uptime_high_loss_window_is_bad(now: datetime) -> None:
 
 
 def test_video_uptime_high_p95_latency_is_bad(now: datetime) -> None:
-    # Minute 0 is clean. Minute 1 has p95 > 300ms.
+    # Minute 0 is clean. Minute 1 has 5/12 samples at 500ms so p95 lands
+    # well above the 300ms threshold (a single outlier wouldn't — that case
+    # is exercised by test_video_uptime_single_rtt_outlier_is_good).
     good = _good_minute(now, minute=0)
     bad_base = now + timedelta(minutes=1)
     kinds = ("icmp", "tcp")
     bad = [
         mk_ping(ts=bad_base + timedelta(seconds=i * 5),
                 success=True, kind=kinds[i % 2],
-                latency_ms=20.0 if i < 11 else 500.0)
+                latency_ms=20.0 if i < 7 else 500.0)
         for i in range(12)
     ]
     assert video_call_uptime_pct(good + bad, []) == 50.0
 
 
 def test_video_uptime_high_jitter_is_bad(now: datetime) -> None:
-    # Minute 0 is clean. Minute 1 has jitter > 30ms but each sample
-    # is still well under the 300ms p95 cap.
+    # Minute 0 is clean. Minute 1 alternates 20/120ms — bottom half clusters
+    # at 20, top half at 120, so IQR ≈ 100ms (well over the 30ms threshold).
+    # Each sample is still under the 300ms p95 cap.
     good = _good_minute(now, minute=0)
     bad_base = now + timedelta(minutes=1)
     kinds = ("icmp", "tcp")
@@ -123,6 +126,22 @@ def test_video_uptime_high_jitter_is_bad(now: datetime) -> None:
         for i in range(12)
     ]
     assert video_call_uptime_pct(good + bad, []) == 50.0
+
+
+def test_video_uptime_single_rtt_outlier_is_good(now: datetime) -> None:
+    # Regression: a single 200ms spike among 11 fast probes used to trip the
+    # stddev-based jitter check, even though a real video call wouldn't notice.
+    # With IQR-based jitter, the outlier sits outside the middle 50%, so the
+    # window stays GOOD.
+    base = now
+    kinds = ("icmp", "tcp")
+    pings = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=200.0 if i == 5 else 20.0)
+        for i in range(12)
+    ]
+    assert video_call_uptime_pct(pings, []) == 100.0
 
 
 def test_video_uptime_empty_input_is_100() -> None:
