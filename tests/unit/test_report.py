@@ -63,7 +63,7 @@ def test_report_handles_empty_window(store: Store) -> None:
         inputs=ReportInputs(start=start, end=end, lang="en"),
     )
     assert "No outages" in out
-    assert "100.000 %" in out  # uptime defaults to 100% on no data
+    assert "100.0 %" in out  # uptime defaults to 100% on no data
 
 
 def test_report_toolbar_renders_when_enabled(store: Store) -> None:

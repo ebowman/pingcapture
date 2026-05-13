@@ -138,9 +138,9 @@
 <h2>{{ t.t("summary_heading") }}</h2>
 <div class="summary-grid">
   <div class="k">{{ t.t("summary_uptime") }}</div>
-  <div class="v">{{ "%.3f" % video_call_uptime_pct_value }} %</div>
+  <div class="v">{{ "%.1f" % video_call_uptime_pct_value }} %</div>
   <div class="k">{{ t.t("summary_probe_success") }}</div>
-  <div class="v">{{ "%.3f" % uptime_pct_value }} %</div>
+  <div class="v">{{ "%.1f" % uptime_pct_value }} %</div>
   <div class="k">{{ t.t("summary_outage_count") }}</div>
   <div class="v">{{ outages|length }}</div>
   <div class="k">{{ t.t("summary_total_outage") }}</div>
