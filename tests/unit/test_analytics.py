@@ -261,6 +261,55 @@ def test_streak_with_only_tcp_failures_is_an_outage(now: datetime) -> None:
     assert outages[0].failed_probes == 3
 
 
+def test_icmp_failures_across_three_targets_is_an_outage(now: datetime) -> None:
+    """The 2026-05-14 15:08 case: 3 distinct ICMP targets fail in a streak,
+    no TCP probe lands in the window. Counts as a real outage under the
+    expanded rule — three independent anycast destinations don't all go
+    quiet at once except from real upstream loss."""
+    pings = [
+        mk_ping(ts=now, kind="icmp", target="1.1.1.1"),  # success
+        mk_ping(ts=now + timedelta(seconds=5), kind="icmp", target="9.9.9.9", success=False),
+        mk_ping(ts=now + timedelta(seconds=10), kind="icmp", target="8.8.8.8", success=False),
+        mk_ping(ts=now + timedelta(seconds=15), kind="icmp", target="1.1.1.1", success=False),
+        mk_ping(ts=now + timedelta(seconds=20), kind="icmp", target="1.1.1.1"),  # success
+    ]
+    outages = detect_outages(pings)
+    assert len(outages) == 1
+    assert sorted(outages[0].affected_targets) == ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+
+
+def test_icmp_failures_across_two_targets_is_flicker(now: datetime) -> None:
+    """Two distinct ICMP targets failing while TCP succeeds is below the
+    multi-target threshold — still demotes to flicker."""
+    pings = [
+        mk_ping(ts=now, kind="icmp", target="1.1.1.1"),  # success
+        mk_ping(ts=now + timedelta(seconds=5), kind="icmp", target="9.9.9.9", success=False),
+        mk_ping(ts=now + timedelta(seconds=10), kind="icmp", target="8.8.8.8", success=False),
+        mk_ping(ts=now + timedelta(seconds=15), kind="icmp", target="9.9.9.9", success=False),
+        mk_ping(ts=now + timedelta(seconds=20), kind="icmp", target="1.1.1.1"),  # success
+    ]
+    assert detect_outages(pings) == []
+
+
+def test_streak_with_dns_failure_is_an_outage(now: datetime) -> None:
+    """A DNS resolution failure inside a streak proves the loss isn't just
+    ICMP shaping — DNS uses a different upstream path. Streak counts even
+    with no TCP failure and only one ICMP target."""
+    pings = [
+        mk_ping(ts=now, kind="icmp", target="1.1.1.1"),
+        mk_ping(ts=now + timedelta(seconds=5), kind="icmp", target="1.1.1.1",
+                success=False, error="no reply"),
+        mk_ping(ts=now + timedelta(seconds=10), kind="icmp", target="cloudflare.com",
+                success=False,
+                error="NameLookupError: The name 'cloudflare.com' cannot be resolved"),
+        mk_ping(ts=now + timedelta(seconds=15), kind="icmp", target="1.1.1.1",
+                success=False, error="no reply"),
+        mk_ping(ts=now + timedelta(seconds=20), kind="icmp", target="1.1.1.1"),
+    ]
+    outages = detect_outages(pings)
+    assert len(outages) == 1
+
+
 def test_latency_stats_basic(now: datetime) -> None:
     pings = [
         mk_ping(ts=now, target="1.1.1.1", latency_ms=10.0),

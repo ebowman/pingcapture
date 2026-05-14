@@ -366,6 +366,24 @@ def restart_console(cfg: Config) -> None:
     click.echo(f"sent SIGUSR1 to pingcapture run (pid={pid})")
 
 
+@main.command("recompute-buckets")
+@click.pass_obj
+def recompute_buckets(cfg: Config) -> None:
+    """Recompute every materialized hourly bucket from raw pings.
+
+    Run this after a change to the outage-detection rule, so the dashboard
+    grid and report reflect the new definition for past hours. Live data
+    is always classified under the current rule; this only refreshes the
+    cached hourly summaries.
+    """
+    store = Store(cfg.db_path)
+    try:
+        n = store.recompute_all_hourly_buckets()
+    finally:
+        store.close()
+    click.echo(f"recomputed {n} hourly buckets at {cfg.db_path}")
+
+
 @main.group()
 def service() -> None:
     """Manage the launchd background service (macOS)."""

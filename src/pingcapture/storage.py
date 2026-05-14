@@ -380,6 +380,16 @@ class Store:
             ),
         )
 
+    def recompute_all_hourly_buckets(self) -> int:
+        """Force-recompute every materialized hour from raw pings.
+
+        Use after a change to the outage-detection rule, when the materialized
+        rows reflect the old definition. Returns the number of hours rebuilt.
+        """
+        self._conn.execute("DELETE FROM hourly_buckets")
+        self._conn.commit()
+        return self.backfill_hourly_buckets()
+
     def backfill_hourly_buckets(self) -> int:
         """Compute hourly_buckets rows for every hour with raw data that lacks one.
 

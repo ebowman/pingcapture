@@ -47,6 +47,60 @@ class PathChange:
     at: datetime
 
 
+# Minimum number of distinct ICMP targets that must fail within a streak for
+# the streak to qualify as a real outage on ICMP evidence alone. One or two
+# targets failing while TCP succeeds is typically upstream ICMP rate-limiting
+# or per-host deprioritisation; failures across three or more independent
+# anycast destinations are hard to explain except as actual link loss.
+OUTAGE_MIN_DISTINCT_ICMP_TARGETS = 3
+
+# Error-substring fingerprints for DNS resolution failures. If a failure in a
+# streak names DNS resolution as the cause, that's independent of any single
+# host going dark or of ICMP rate-limiting (resolution uses UDP/53 on the
+# nearest resolver), and so counts as evidence of real upstream loss.
+_DNS_ERROR_FINGERPRINTS = ("NameLookupError", "Name or service not known",
+                           "nodename nor servname", "Temporary failure in name resolution")
+
+
+def _is_dns_failure(p: PingResult) -> bool:
+    err = (p.error or "")
+    return any(fp in err for fp in _DNS_ERROR_FINGERPRINTS)
+
+
+def _streak_is_outage(failures: list[PingResult]) -> bool:
+    """The single decision point: does this failure streak count as an outage?
+
+    Everything in the codebase that asks "is this an outage?" routes through
+    detect_outages(), which routes through this predicate. Change the rule
+    here and every consumer (web /api/summary, bucket_outages, hourly
+    materialized buckets in storage, video_call_uptime_pct, report.py) sees
+    the new behaviour automatically.
+
+    A streak is an outage when ANY of these hold:
+      (a) it contains at least one TCP failure — the historical rule, TCP is
+          the user-visible path so a TCP failure is by definition a real
+          connectivity event;
+      (b) it contains failures across at least
+          OUTAGE_MIN_DISTINCT_ICMP_TARGETS distinct ICMP targets — three or
+          more independent anycast destinations failing together is
+          essentially impossible to explain except as upstream loss;
+      (c) it contains a DNS resolution failure — DNS uses a different
+          transport and a different upstream path from ICMP echo, so a
+          NameLookupError during a failure streak corroborates a real outage.
+
+    Otherwise the streak demotes to flicker (single-target ICMP rate-limiting,
+    transient per-host shaping) and does not appear as an outage.
+    """
+    if any(p.kind == "tcp" for p in failures):
+        return True
+    if any(_is_dns_failure(p) for p in failures):
+        return True
+    icmp_targets = {p.target for p in failures if p.kind == "icmp"}
+    if len(icmp_targets) >= OUTAGE_MIN_DISTINCT_ICMP_TARGETS:
+        return True
+    return False
+
+
 def detect_outages(
     pings: Iterable[PingResult],
     *,
@@ -60,10 +114,9 @@ def detect_outages(
     when more than ``gap_tolerance_s`` elapses with no probes (so a system
     sleep doesn't get charged as an outage).
 
-    A streak is reported as an outage only if it contains at least one TCP
-    failure. ICMP-only streaks (typically caused by upstream ICMP rate-limiting
-    or QoS deprioritization while TCP keeps flowing) are *not* outages — they
-    do not represent user-visible connectivity loss. See pingcapture-ht4.
+    Whether a streak qualifies as an outage (vs. flicker) is decided by
+    ``_streak_is_outage`` — the single source of truth for that distinction.
+    See its docstring for the rule.
     """
     sorted_pings = sorted(pings, key=lambda p: p.ts)
     if not sorted_pings:
@@ -80,9 +133,7 @@ def detect_outages(
         nonlocal in_outage, outage_start, outage_failures
         if outage_start is None:
             return
-        # An ICMP-only failure streak is not a user-visible outage — TCP was
-        # never observed to fail. Drop it without emitting an Outage row.
-        if not any(p.kind == "tcp" for p in outage_failures):
+        if not _streak_is_outage(outage_failures):
             in_outage = False
             outage_start = None
             outage_failures = []

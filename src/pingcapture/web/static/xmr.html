@@ -6,6 +6,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <style>
   :root {
     --bg: #0e1116;
@@ -156,11 +158,15 @@
       </h2>
       <div class="controls">
         <span class="ctrl-label">window</span>
+        <button data-hours="1">1h</button>
+        <button data-hours="6">6h</button>
+        <button data-hours="12">12h</button>
         <button data-hours="24" class="active">24h</button>
         <button data-hours="168">7d</button>
         <button data-hours="720">30d</button>
         <span class="ctrl-divider" aria-hidden="true"></span>
         <span class="ctrl-label">bin</span>
+        <button data-bucket="30">30 s</button>
         <button data-bucket="60">1 min</button>
         <button data-bucket="300" class="active">5 min</button>
         <button data-bucket="900">15 min</button>
@@ -174,6 +180,7 @@
       <span><i class="dot dot-acute"></i>acute — outside limits, 3 of 4 past 2/3, big jump</span>
       <span><i class="dot dot-shift"></i>shift — run of 8 (trigger only)</span>
       <span><i class="dot dot-trend"></i>trend — 6 strictly increasing or decreasing</span>
+      <span style="margin-left:auto;opacity:0.7;">drag to zoom · shift-drag to pan · double-click to reset</span>
     </div>
   </section>
 
@@ -186,9 +193,17 @@
 const fmtMs = (v) => v == null ? "—" : v.toFixed(1) + " ms";
 const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, " UTC") : "—";
 
-const ALLOWED_HOURS = new Set([24, 168, 720]);
-const ALLOWED_BUCKETS = new Set([60, 300, 900]);
+const ALLOWED_HOURS = new Set([1, 6, 12, 24, 168, 720]);
+const ALLOWED_BUCKETS = new Set([30, 60, 300, 900]);
 const ALLOWED_KINDS = new Set(["icmp", "tcp"]);
+
+// Default bin for a given window when the URL/state hasn't pinned one.
+// Picked to leave roughly 60-300 points per chart at the chosen window —
+// dense enough that short events are still visible after zoom, sparse
+// enough that the chart renders cleanly.
+const DEFAULT_BUCKET_FOR_HOURS = {
+  1: 30, 6: 60, 12: 60, 24: 300, 168: 900, 720: 900,
+};
 
 function readSettingsFromUrl() {
   const p = new URLSearchParams(location.search);
@@ -308,9 +323,11 @@ function renderOneChart(root, c) {
     `;
     root.appendChild(card);
     const [indCanvas, mrCanvas] = card.querySelectorAll("canvas");
-    const ind = new Chart(indCanvas, makeIndividualsConfig());
-    const mr = new Chart(mrCanvas, makeMrConfig());
-    entry = { ind, mr, rootEl: card };
+    const ind = new Chart(indCanvas, makeIndividualsConfig(c.target));
+    const mr = new Chart(mrCanvas, makeMrConfig(c.target));
+    indCanvas.addEventListener("dblclick", () => resetZoomForTarget(c.target));
+    mrCanvas.addEventListener("dblclick", () => resetZoomForTarget(c.target));
+    entry = { ind, mr, rootEl: card, zoom: null };
     charts.set(c.target, entry);
   }
 
@@ -391,7 +408,7 @@ function renderOneChart(root, c) {
     horizontalLine("centre", c.center, "#8b949e", [2, 4]),
     horizontalLine("LNPL", c.lnpl, "#f85149", [4, 4]),
   ];
-  setXBounds(entry.ind);
+  setXBounds(entry.ind, c.target);
   entry.ind.update("none");
 
   // MR chart data
@@ -429,7 +446,7 @@ function renderOneChart(root, c) {
     horizontalLine("MR URL", c.mr_url, "#f85149", [4, 4]),
     horizontalLine("MR-bar", c.mr_bar, "#8b949e", [2, 4]),
   ];
-  setXBounds(entry.mr);
+  setXBounds(entry.mr, c.target);
   entry.mr.update("none");
 
   // Signals summary list
@@ -499,13 +516,41 @@ const limitLinesPlugin = {
 };
 Chart.register(limitLinesPlugin);
 
-function setXBounds(chart) {
+function setXBounds(chart, target) {
+  // Preserve any active zoom across the 30s auto-refresh — clobbering it
+  // every cycle would be infuriating. The user resets via double-click or
+  // by clicking a window button.
+  const entry = target != null ? charts.get(target) : null;
+  if (entry && entry.zoom) {
+    chart.options.scales.x.min = entry.zoom.min;
+    chart.options.scales.x.max = entry.zoom.max;
+    return;
+  }
   const now = Date.now();
   chart.options.scales.x.min = now - currentHours * 3600 * 1000;
   chart.options.scales.x.max = now;
 }
 
-function makeIndividualsConfig() {
+// Zoom state per target — when the user drags on either the individuals
+// or MR chart, we apply the same x-range to its partner so they stay
+// aligned. We also remember the range so the 30s auto-refresh doesn't
+// reset the user's zoom.
+function linkedZoomHandler(target) {
+  return ({ chart }) => {
+    const { min, max } = chart.scales.x;
+    const entry = charts.get(target);
+    if (!entry) return;
+    entry.zoom = { min, max };
+    const other = chart === entry.ind ? entry.mr : entry.ind;
+    if (other && (other.scales.x.min !== min || other.scales.x.max !== max)) {
+      other.scales.x.min = min;
+      other.scales.x.max = max;
+      other.update("none");
+    }
+  };
+}
+
+function makeIndividualsConfig(target) {
   return {
     type: "line",
     data: { datasets: [] },
@@ -529,12 +574,23 @@ function makeIndividualsConfig() {
             title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
           },
         },
+        zoom: {
+          zoom: {
+            drag: { enabled: true, backgroundColor: "rgba(88,166,255,0.12)",
+                    borderColor: "rgba(88,166,255,0.6)", borderWidth: 1 },
+            pinch: { enabled: true },
+            mode: "x",
+            onZoomComplete: linkedZoomHandler(target),
+          },
+          pan: { enabled: true, mode: "x", modifierKey: "shift",
+                 onPanComplete: linkedZoomHandler(target) },
+        },
       },
     },
   };
 }
 
-function makeMrConfig() {
+function makeMrConfig(target) {
   return {
     type: "line",
     data: { datasets: [] },
@@ -556,20 +612,53 @@ function makeMrConfig() {
             title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
           },
         },
+        zoom: {
+          zoom: {
+            drag: { enabled: true, backgroundColor: "rgba(88,166,255,0.12)",
+                    borderColor: "rgba(88,166,255,0.6)", borderWidth: 1 },
+            pinch: { enabled: true },
+            mode: "x",
+            onZoomComplete: linkedZoomHandler(target),
+          },
+          pan: { enabled: true, mode: "x", modifierKey: "shift",
+                 onPanComplete: linkedZoomHandler(target) },
+        },
       },
     },
   };
 }
 
+function resetZoomForTarget(target) {
+  const entry = charts.get(target);
+  if (!entry) return;
+  entry.zoom = null;
+  if (entry.ind) entry.ind.resetZoom();
+  if (entry.mr) entry.mr.resetZoom();
+}
+
+function clearAllZooms() {
+  for (const [target, entry] of charts) {
+    entry.zoom = null;
+    if (entry.ind) entry.ind.resetZoom();
+    if (entry.mr) entry.mr.resetZoom();
+  }
+}
+
 document.querySelectorAll("button[data-hours]").forEach(btn => {
   btn.addEventListener("click", () => {
     currentHours = parseFloat(btn.dataset.hours);
+    // Auto-pick the bin best suited to this window. The user can still
+    // override via the bin buttons after the chart loads.
+    const defBin = DEFAULT_BUCKET_FOR_HOURS[currentHours];
+    if (defBin) currentBucket = defBin;
+    clearAllZooms();
     syncActiveButtons(); writeSettingsToUrl(); refresh();
   });
 });
 document.querySelectorAll("button[data-bucket]").forEach(btn => {
   btn.addEventListener("click", () => {
     currentBucket = parseInt(btn.dataset.bucket, 10);
+    clearAllZooms();
     syncActiveButtons(); writeSettingsToUrl(); refresh();
   });
 });
