@@ -44,10 +44,14 @@
   .status-LOADING { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
   main { padding: 1.5rem; max-width: 1280px; margin: 0 auto; }
   .grid { display: grid; gap: 1rem; }
+  .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 1100px) {
+    .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
   @media (max-width: 900px) {
-    .grid-3, .grid-2 { grid-template-columns: 1fr; }
+    .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
   }
   .card {
     background: var(--panel); border: 1px solid var(--grid);
@@ -208,15 +212,20 @@
     </div>
   </section>
 
-  <section class="grid grid-3" style="margin-top:1rem;">
+  <section class="grid grid-4" style="margin-top:1rem;">
     <div class="card">
       <h2>Uptime (last <span id="window-label">24h</span>)<details class="defn"><summary aria-label="How uptime is defined">?</summary><div class="defn-body">
         Percentage of one-minute windows that would have sustained a
         video call. A minute counts as <em>down</em> if it overlaps a
-        detected outage, packet loss exceeds <code>1%</code>, p95 round-trip
-        latency exceeds <code>300&nbsp;ms</code>, or jitter (latency
-        standard&nbsp;deviation) exceeds <code>30&nbsp;ms</code>. Thresholds
-        follow ITU/Cisco interactive-video guidance.<br><br>
+        detected connectivity outage, TCP packet loss exceeds
+        <code>1%</code>, p95 round-trip latency exceeds
+        <code>300&nbsp;ms</code>, or jitter (IQR of RTT) exceeds
+        <code>75&nbsp;ms</code>. Thresholds follow ITU/Cisco
+        interactive-video guidance.<br><br>
+        <em>Connectivity outages</em> are streaks of failing probes; <em>quality
+        events</em> are minutes that failed the latency / jitter / loss
+        thresholds without a connectivity outage. Together they
+        account for every minute the rule marks bad.<br><br>
         The smaller <em>probes</em> number is the raw success ratio of every
         ICMP/TCP probe — it includes single-probe drops that a user would
         never notice.
@@ -227,10 +236,26 @@
       </div>
     </div>
     <div class="card">
-      <h2>Outages</h2>
+      <h2>Connectivity outages<details class="defn"><summary aria-label="What is a connectivity outage?">?</summary><div class="defn-body">
+        Streaks of failing probes that look like real loss: any TCP
+        failure, failures across <code>≥3</code> ICMP targets at once,
+        or a DNS resolution failure.
+      </div></details></h2>
       <div class="row">
         <div class="stat" id="outage-count">—</div>
         <div class="muted">total <span id="outage-total">—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Quality events<details class="defn"><summary aria-label="What is a quality event?">?</summary><div class="defn-body">
+        One-minute windows where call quality fell below threshold
+        without a connectivity outage — high latency, jitter, or TCP
+        loss. The line stayed up, but a call would have been audibly
+        rough during these minutes.
+      </div></details></h2>
+      <div class="row">
+        <div class="stat" id="quality-count">—</div>
+        <div class="muted">total <span id="quality-total">—</span></div>
       </div>
     </div>
     <div class="card">
@@ -270,14 +295,24 @@
       </table>
     </div>
     <div class="card">
-      <h2>Outages</h2>
+      <h2>Connectivity outages</h2>
       <table id="outage-table">
         <thead><tr>
           <th>Start (UTC)</th><th class="num">Duration</th><th class="num">Probes</th><th>Targets</th>
         </tr></thead>
-        <tbody><tr><td colspan="4" class="muted">No outages in window.</td></tr></tbody>
+        <tbody><tr><td colspan="4" class="muted">No connectivity outages in window.</td></tr></tbody>
       </table>
     </div>
+  </section>
+
+  <section class="card" style="margin-top:1rem;">
+    <h2>Quality events</h2>
+    <table id="quality-table">
+      <thead><tr>
+        <th>Start (UTC)</th><th>Reason</th><th class="num">Worst metric</th><th class="num">Threshold</th><th>Targets</th>
+      </tr></thead>
+      <tbody><tr><td colspan="5" class="muted">No quality events in window.</td></tr></tbody>
+    </table>
   </section>
 
   <section class="card" style="margin-top:1rem;">
@@ -370,6 +405,7 @@ async function refresh() {
     renderChart(ts);
     renderRecent(recent);
     renderOutages(summary);
+    renderQualityEvents(summary);
     renderPaths(summary);
     renderGrid(buckets);
     document.getElementById("version").textContent = "pingcapture v" + status.version;
@@ -486,6 +522,11 @@ function renderSummary(s) {
   document.getElementById("outage-count").textContent = s.outages.length;
   const total = s.outages.reduce((a, o) => a + o.duration_s, 0);
   document.getElementById("outage-total").textContent = fmtSec(total);
+  const qe = s.quality_events || [];
+  document.getElementById("quality-count").textContent = qe.length;
+  // Each quality event is a 60s minute by construction — surface the time
+  // not the count, so the user can compare it to the outage total directly.
+  document.getElementById("quality-total").textContent = fmtSec(qe.length * 60);
   const bloat = s.buffer_bloat_ms;
   document.getElementById("bloat").innerHTML = (bloat == null ? "—" : bloat.toFixed(1)) +
     '<span class="unit">ms σ</span>';
@@ -507,7 +548,7 @@ function renderSummary(s) {
 function renderOutages(s) {
   const tbody = document.querySelector("#outage-table tbody");
   if (s.outages.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="muted">No outages in window.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No connectivity outages in window.</td></tr>';
     return;
   }
   tbody.innerHTML = s.outages.slice().reverse().map(o => `
@@ -518,6 +559,39 @@ function renderOutages(s) {
       <td class="muted">${o.affected_targets.join(", ")}</td>
     </tr>
   `).join("");
+}
+
+const QUALITY_REASON_LABEL = {
+  loss:    "TCP loss",
+  latency: "latency (p95)",
+  jitter:  "jitter (IQR)",
+};
+const QUALITY_REASON_UNIT = {
+  loss:    (v) => v.toFixed(1) + "%",
+  latency: (v) => v.toFixed(0) + " ms",
+  jitter:  (v) => v.toFixed(0) + " ms",
+};
+
+function renderQualityEvents(s) {
+  const tbody = document.querySelector("#quality-table tbody");
+  const events = s.quality_events || [];
+  if (events.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No quality events in window.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = events.slice().reverse().map(e => {
+    const lbl = QUALITY_REASON_LABEL[e.reason] || e.reason;
+    const fmt = QUALITY_REASON_UNIT[e.reason] || ((v) => v.toFixed(1));
+    return `
+      <tr>
+        <td>${fmtTs(e.start)}</td>
+        <td>${lbl}</td>
+        <td class="num">${fmt(e.worst_metric)}</td>
+        <td class="num muted">${fmt(e.threshold)}</td>
+        <td class="muted">${e.affected_targets.join(", ")}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 function renderPaths(s) {

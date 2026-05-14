@@ -12,6 +12,7 @@ from . import __repo_url__, __version__
 from .analytics import (
     Outage,
     PathChange,
+    QualityEvent,
     bucket_outages,
     buffer_bloat_score,
     detect_outages,
@@ -19,6 +20,7 @@ from .analytics import (
     latency_stats,
     mtr_path_changes,
     pivot_buckets_by_day,
+    quality_events,
     summarize_by_hour_of_day,
     uptime_pct,
     video_call_uptime_pct,
@@ -69,6 +71,26 @@ def _outage_view(o: Outage, t: Translator) -> dict[str, object]:
     }
 
 
+def _quality_event_view(e: QualityEvent, t: Translator) -> dict[str, object]:
+    # Numbers are rendered here (not in the template) so the formatting
+    # tracks the reason — loss is "%", latency/jitter is "ms".
+    if e.reason == "loss":
+        worst_str = f"{e.worst_metric:.1f}%"
+        threshold_str = f"{e.threshold:.1f}%"
+    else:
+        worst_str = f"{e.worst_metric:.0f} ms"
+        threshold_str = f"{e.threshold:.0f} ms"
+    return {
+        "start_str": _fmt_ts(e.start),
+        "reason": e.reason,
+        "reason_label": t.t(f"quality_reason_{e.reason}"),
+        "worst_str": worst_str,
+        "threshold_str": threshold_str,
+        "samples": e.samples,
+        "affected_targets": e.affected_targets,
+    }
+
+
 def _path_change_view(c: PathChange) -> dict[str, object]:
     return {
         "at_str": _fmt_ts(c.at),
@@ -105,8 +127,11 @@ def render_report(
     pings = store.pings_between(inputs.start, inputs.end)
     mtr_runs = store.mtr_runs_between(inputs.start, inputs.end)
     outages = detect_outages(pings)
+    q_events = quality_events(pings, outages)
     longest = max((o.duration_s for o in outages), default=0.0)
     total_out = sum(o.duration_s for o in outages)
+    # Each quality event is exactly one 60s minute by construction.
+    total_quality_s = float(len(q_events) * 60)
     grid_start = floor_to_hour(inputs.start)
     grid_end = floor_to_hour(inputs.end) + timedelta(hours=1)
     buckets = bucket_outages(
@@ -130,6 +155,9 @@ def render_report(
         "outages": [_outage_view(o, t) for o in outages],
         "total_outage_str": _format_duration(t, total_out),
         "longest_outage_str": _format_duration(t, longest),
+        "quality_events": [_quality_event_view(e, t) for e in q_events],
+        "quality_count": len(q_events),
+        "total_quality_str": _format_duration(t, total_quality_s),
         "buffer_bloat": buffer_bloat_score(pings),
         "icmp_interval": cfg.icmp_interval_s,
         "icmp_target_count": len(cfg.icmp_targets),

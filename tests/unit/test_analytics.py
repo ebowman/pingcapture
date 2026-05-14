@@ -537,3 +537,122 @@ def test_xmr_excludes_failed_probes(now: datetime) -> None:
     assert len(charts) == 1
     # 12 distinct buckets, one point each.
     assert len(charts[0].points) == 12
+
+
+# ---------------------------------------------------------------------------
+# Quality events — minutes failing the video-call rule for reasons other
+# than an overlapping connectivity outage.
+# ---------------------------------------------------------------------------
+
+from pingcapture.analytics import (
+    QUALITY_REASON_JITTER,
+    QUALITY_REASON_LATENCY,
+    QUALITY_REASON_LOSS,
+    quality_events,
+)
+
+
+def test_quality_events_empty_when_no_pings() -> None:
+    assert quality_events([], []) == []
+
+
+def test_quality_events_high_p95_latency_fires(now: datetime) -> None:
+    # Twelve probes in one minute, p95 > 300ms. No connectivity outage.
+    pings = [
+        mk_ping(ts=now + timedelta(seconds=i), kind="icmp", latency_ms=400.0)
+        for i in range(12)
+    ]
+    events = quality_events(pings, [])
+    assert len(events) == 1
+    assert events[0].reason == QUALITY_REASON_LATENCY
+    assert events[0].worst_metric >= 300.0
+
+
+def test_quality_events_high_jitter_fires(now: datetime) -> None:
+    # Latencies span 10 / 20 / 90 / 200 ms — IQR easily > 75ms, p95 still
+    # under 300. Must trip the jitter check, not the latency check.
+    rtts = [10.0, 12.0, 15.0, 20.0, 25.0, 30.0, 40.0, 60.0, 90.0, 110.0, 150.0, 200.0]
+    pings = [
+        mk_ping(ts=now + timedelta(seconds=i), kind="icmp", latency_ms=r)
+        for i, r in enumerate(rtts)
+    ]
+    events = quality_events(pings, [])
+    assert len(events) == 1
+    assert events[0].reason == QUALITY_REASON_JITTER
+
+
+def test_quality_events_tcp_loss_fires(now: datetime) -> None:
+    # 10 TCP probes, 3 fail = 30% > 1% threshold. ICMP all fine, so no
+    # outage opens (and we pass no outages anyway).
+    pings = []
+    for i in range(10):
+        pings.append(mk_ping(
+            ts=now + timedelta(seconds=i * 5), kind="tcp",
+            success=(i not in (3, 4, 5)),
+        ))
+    events = quality_events(pings, [])
+    assert len(events) == 1
+    assert events[0].reason == QUALITY_REASON_LOSS
+
+
+def test_quality_events_skipped_when_minute_overlaps_outage(now: datetime) -> None:
+    """Minutes inside a connectivity outage are accounted for by the outage
+    row — they must not also become quality events (double-counting)."""
+    from pingcapture.analytics import Outage
+
+    pings = [
+        mk_ping(ts=now + timedelta(seconds=i), kind="icmp", latency_ms=400.0)
+        for i in range(12)
+    ]
+    outage = Outage(
+        start=now,
+        end=now + timedelta(seconds=30),
+        duration_s=30.0,
+        failed_probes=3,
+        affected_targets=["1.1.1.1"],
+    )
+    events = quality_events(pings, [outage])
+    assert events == []
+
+
+def test_quality_events_good_minute_produces_nothing(now: datetime) -> None:
+    pings = [
+        mk_ping(ts=now + timedelta(seconds=i), kind="icmp", latency_ms=15.0)
+        for i in range(12)
+    ]
+    assert quality_events(pings, []) == []
+
+
+def test_quality_and_uptime_agree(now: datetime) -> None:
+    """The whole point of refactoring _classify_minute: video_call_uptime_pct
+    and quality_events must produce a consistent picture. If uptime < 100%
+    and no outages were detected, the gap must equal len(quality_events) / N
+    where N is the total minute count."""
+    # Two minutes total: one good, one with a 400ms latency spike.
+    base = now.replace(second=0, microsecond=0)
+    pings = []
+    for i in range(12):
+        pings.append(mk_ping(ts=base + timedelta(seconds=i), kind="icmp", latency_ms=15.0))
+    for i in range(12):
+        pings.append(mk_ping(ts=base + timedelta(minutes=1, seconds=i),
+                             kind="icmp", latency_ms=400.0))
+    events = quality_events(pings, [])
+    uptime = video_call_uptime_pct(pings, [])
+    assert len(events) == 1
+    # 1 good out of 2 minutes -> 50%.
+    assert uptime == 50.0
+
+
+def test_quality_event_reason_priority_loss_over_latency(now: datetime) -> None:
+    """When a minute trips both TCP loss and high latency, the reason field
+    should report loss (the more user-visible symptom)."""
+    pings = []
+    for i in range(10):
+        pings.append(mk_ping(
+            ts=now + timedelta(seconds=i * 5),
+            kind="tcp", success=(i % 5 != 0),  # 20% loss
+            latency_ms=400.0 if i % 5 != 0 else None,
+        ))
+    events = quality_events(pings, [])
+    assert len(events) == 1
+    assert events[0].reason == QUALITY_REASON_LOSS

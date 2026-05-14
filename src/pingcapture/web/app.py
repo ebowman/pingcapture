@@ -18,6 +18,7 @@ from ..analytics import (
     floor_to_hour,
     latency_stats,
     mtr_path_changes,
+    quality_events,
     uptime_pct,
     video_call_uptime_pct,
     window,
@@ -115,6 +116,7 @@ def create_app(cfg: Config) -> FastAPI:
             pings = store.pings_between(start, end)
             mtr_runs = store.mtr_runs_between(start, end)
         outages = detect_outages(pings)
+        q_events = quality_events(pings, outages)
         return JSONResponse(
             {
                 "window_hours": hours,
@@ -129,6 +131,18 @@ def create_app(cfg: Config) -> FastAPI:
                         "affected_targets": o.affected_targets,
                     }
                     for o in outages
+                ],
+                "quality_events": [
+                    {
+                        "start": e.start.isoformat(),
+                        "end": e.end.isoformat(),
+                        "reason": e.reason,
+                        "worst_metric": e.worst_metric,
+                        "threshold": e.threshold,
+                        "samples": e.samples,
+                        "affected_targets": e.affected_targets,
+                    }
+                    for e in q_events
                 ],
                 "buffer_bloat_ms": buffer_bloat_score(pings),
                 "latency": [

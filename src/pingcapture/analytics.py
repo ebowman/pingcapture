@@ -209,6 +209,92 @@ VIDEO_CALL_MAX_P95_RTT_MS = 300.0
 VIDEO_CALL_MAX_JITTER_MS = 75.0
 
 
+# Quality event reason codes — the lever that explains why a minute fell
+# below video-call quality without there being a detected connectivity outage.
+QUALITY_REASON_LOSS = "loss"
+QUALITY_REASON_LATENCY = "latency"
+QUALITY_REASON_JITTER = "jitter"
+
+
+@dataclass(frozen=True)
+class QualityEvent:
+    """A 60-second window where call quality fell below threshold without
+    there being a detected connectivity outage.
+
+    A user reading the dashboard would otherwise see uptime < 100% with zero
+    outages and be confused; quality events explain that gap. The reason
+    field is the *first* threshold that triggered (in order: loss, latency,
+    jitter) since one event often crosses several at once."""
+    start: datetime
+    end: datetime
+    reason: str               # QUALITY_REASON_*
+    worst_metric: float       # the value that tripped the threshold
+    threshold: float          # what it was compared against
+    samples: int              # probes in the minute
+    affected_targets: list[str]
+
+
+def _classify_minute(
+    items: list[PingResult],
+) -> tuple[str, float, float] | None:
+    """The shared rule: classify a 60s minute as good or as failing one of
+    the video-call thresholds. Returns None for a good minute, or
+    (reason, worst_metric, threshold) for a bad one.
+
+    Used by BOTH video_call_uptime_pct and quality_events so the two cannot
+    drift. The outage-overlap check is the caller's responsibility — it
+    needs the outage list, which this helper doesn't take.
+
+    Order of checks matters for *labelling* (loss is reported in preference
+    to latency, latency in preference to jitter) but not for the accept/reject
+    decision: a minute that trips any check is bad. Ordering is loss first
+    because TCP failure is the most user-visible symptom, then latency
+    (perceptible mid-call), then jitter (audible as choppiness)."""
+    tcp_items = [p for p in items if p.kind == "tcp"]
+    if tcp_items:
+        tcp_failed = sum(1 for p in tcp_items if not p.success)
+        tcp_loss_pct = 100.0 * tcp_failed / len(tcp_items)
+        if tcp_loss_pct > VIDEO_CALL_MAX_LOSS_PCT:
+            return (QUALITY_REASON_LOSS, tcp_loss_pct, VIDEO_CALL_MAX_LOSS_PCT)
+    latencies = sorted(
+        p.latency_ms for p in items
+        if p.success and p.latency_ms is not None
+    )
+    if latencies:
+        p95 = _pct(latencies, 95)
+        if p95 > VIDEO_CALL_MAX_P95_RTT_MS:
+            return (QUALITY_REASON_LATENCY, p95, VIDEO_CALL_MAX_P95_RTT_MS)
+        if len(latencies) >= 4:
+            iqr = _pct(latencies, 75) - _pct(latencies, 25)
+            if iqr > VIDEO_CALL_MAX_JITTER_MS:
+                return (QUALITY_REASON_JITTER, iqr, VIDEO_CALL_MAX_JITTER_MS)
+    return None
+
+
+def _bucket_pings_by_minute(
+    pings: Iterable[PingResult],
+) -> dict[datetime, list[PingResult]]:
+    """Floor every probe to its containing minute. Single helper used by
+    both video_call_uptime_pct and quality_events."""
+    buckets: dict[datetime, list[PingResult]] = {}
+    for p in pings:
+        key = p.ts.replace(second=0, microsecond=0)
+        buckets.setdefault(key, []).append(p)
+    return buckets
+
+
+def _minute_overlaps_outage(
+    bucket_start: datetime,
+    outages: list[Outage],
+    window: timedelta,
+) -> bool:
+    bucket_end = bucket_start + window
+    for o in outages:
+        if o.start < bucket_end and o.end > bucket_start:
+            return True
+    return False
+
+
 def video_call_uptime_pct(
     pings: Iterable[PingResult],
     outages: Iterable[Outage],
@@ -224,52 +310,68 @@ def video_call_uptime_pct(
       - p95 RTT in the window exceeds VIDEO_CALL_MAX_P95_RTT_MS,
       - inter-quartile RTT spread (p75-p25) exceeds VIDEO_CALL_MAX_JITTER_MS.
 
+    The threshold checks route through ``_classify_minute`` so the rule is
+    a single source of truth shared with ``quality_events``.
+
     Windows with no probes are excluded from the denominator — gaps in
     capture don't count for or against uptime.
     """
     window = timedelta(seconds=VIDEO_CALL_WINDOW_S)
-    buckets: dict[datetime, list[PingResult]] = {}
-    for p in pings:
-        key = p.ts.replace(second=0, microsecond=0)
-        buckets.setdefault(key, []).append(p)
-
+    buckets = _bucket_pings_by_minute(pings)
     if not buckets:
         return 100.0
-
     outage_list = list(outages)
-
-    def _overlaps_outage(bucket_start: datetime) -> bool:
-        bucket_end = bucket_start + window
-        for o in outage_list:
-            if o.start < bucket_end and o.end > bucket_start:
-                return True
-        return False
-
     good = 0
     for bucket_start, items in buckets.items():
-        if _overlaps_outage(bucket_start):
+        if _minute_overlaps_outage(bucket_start, outage_list, window):
             continue
-        tcp_items = [p for p in items if p.kind == "tcp"]
-        if tcp_items:
-            tcp_failed = sum(1 for p in tcp_items if not p.success)
-            tcp_loss_pct = 100.0 * tcp_failed / len(tcp_items)
-            if tcp_loss_pct > VIDEO_CALL_MAX_LOSS_PCT:
-                continue
-        latencies = sorted(
-            p.latency_ms for p in items
-            if p.success and p.latency_ms is not None
-        )
-        if latencies:
-            p95 = _pct(latencies, 95)
-            if p95 > VIDEO_CALL_MAX_P95_RTT_MS:
-                continue
-            if len(latencies) >= 4:
-                iqr = _pct(latencies, 75) - _pct(latencies, 25)
-                if iqr > VIDEO_CALL_MAX_JITTER_MS:
-                    continue
-        good += 1
-
+        if _classify_minute(items) is None:
+            good += 1
     return 100.0 * good / len(buckets)
+
+
+def quality_events(
+    pings: Iterable[PingResult],
+    outages: Iterable[Outage],
+) -> list[QualityEvent]:
+    """Minutes that failed the video-call quality rule for reasons OTHER
+    than overlapping a detected outage.
+
+    A user reading the dashboard sees outage rows for connectivity loss,
+    but the same uptime metric also penalises high latency, jitter, and
+    TCP loss inside minutes that *didn't* trigger an outage. Without
+    surfacing those, the dashboard can show 'uptime 98.4%, outages 0'
+    which reads as a contradiction. Quality events make that gap legible.
+
+    Adjacent minutes with the same reason are NOT merged here — each minute
+    is its own event. Coalescing is a presentation concern that should sit
+    in the UI, not the analytics layer. (If we need it later, add a
+    ``coalesce_quality_events`` helper.)"""
+    window = timedelta(seconds=VIDEO_CALL_WINDOW_S)
+    buckets = _bucket_pings_by_minute(pings)
+    outage_list = list(outages)
+    events: list[QualityEvent] = []
+    for bucket_start in sorted(buckets):
+        items = buckets[bucket_start]
+        if _minute_overlaps_outage(bucket_start, outage_list, window):
+            continue
+        classification = _classify_minute(items)
+        if classification is None:
+            continue
+        reason, worst, threshold = classification
+        targets = sorted({p.target for p in items})
+        events.append(
+            QualityEvent(
+                start=bucket_start,
+                end=bucket_start + window,
+                reason=reason,
+                worst_metric=worst,
+                threshold=threshold,
+                samples=len(items),
+                affected_targets=targets,
+            )
+        )
+    return events
 
 
 def latency_stats(pings: Iterable[PingResult]) -> list[LatencyStats]:
@@ -901,6 +1003,10 @@ __all__ = [
     "LatencyStats",
     "Outage",
     "PathChange",
+    "QUALITY_REASON_JITTER",
+    "QUALITY_REASON_LATENCY",
+    "QUALITY_REASON_LOSS",
+    "QualityEvent",
     "SEVERITY_FLICKER",
     "SEVERITY_MAJOR",
     "SEVERITY_MINOR",
@@ -921,6 +1027,7 @@ __all__ = [
     "latency_stats",
     "mtr_path_changes",
     "pivot_buckets_by_day",
+    "quality_events",
     "summarize_by_hour_of_day",
     "uptime_pct",
     "video_call_uptime_pct",

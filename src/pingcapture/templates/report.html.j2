@@ -147,6 +147,10 @@
   <div class="v">{{ total_outage_str }}</div>
   <div class="k">{{ t.t("summary_longest_outage") }}</div>
   <div class="v">{{ longest_outage_str }}</div>
+  <div class="k">{{ t.t("summary_quality_count") }}</div>
+  <div class="v">{{ quality_count }}</div>
+  <div class="k">{{ t.t("summary_total_quality") }}</div>
+  <div class="v">{{ total_quality_str }}</div>
   <div class="k">{{ t.t("summary_buffer_bloat") }}</div>
   <div class="v">{% if buffer_bloat is none %}—{% else %}{{ "%.1f" % buffer_bloat }} ms{% endif %}</div>
 </div>
@@ -213,6 +217,35 @@
         <td class="num">{{ o.duration_str }}</td>
         <td class="num">{{ o.failed_probes }}</td>
         <td>{{ o.affected_targets|join(", ") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+
+<h2>{{ t.t("quality_heading") }}</h2>
+<p class="muted">{{ t.t("quality_intro") }}</p>
+{% if quality_events|length == 0 %}
+  <p>{{ t.t("quality_none") }}</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t.t("quality_col_start") }}</th>
+        <th>{{ t.t("quality_col_reason") }}</th>
+        <th class="num">{{ t.t("quality_col_worst") }}</th>
+        <th class="num">{{ t.t("quality_col_threshold") }}</th>
+        <th>{{ t.t("quality_col_targets") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for e in quality_events %}
+      <tr>
+        <td>{{ e.start_str }}</td>
+        <td>{{ e.reason_label }}</td>
+        <td class="num">{{ e.worst_str }}</td>
+        <td class="num muted">{{ e.threshold_str }}</td>
+        <td>{{ e.affected_targets|join(", ") }}</td>
       </tr>
     {% endfor %}
     </tbody>

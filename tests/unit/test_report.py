@@ -62,7 +62,8 @@ def test_report_handles_empty_window(store: Store) -> None:
         cfg=cfg, store=store,
         inputs=ReportInputs(start=start, end=end, lang="en"),
     )
-    assert "No outages" in out
+    assert "No connectivity outages" in out
+    assert "No quality events" in out
     assert "100.0 %" in out  # uptime defaults to 100% on no data
 
 

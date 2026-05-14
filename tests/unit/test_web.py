@@ -47,6 +47,10 @@ def test_summary_endpoint(tmp_db, now) -> None:
     assert "uptime_pct" in body
     assert "outages" in body
     assert "latency" in body
+    # Quality events must always be returned so the dashboard can keep its
+    # 'connectivity outages + quality events' picture consistent.
+    assert "quality_events" in body
+    assert isinstance(body["quality_events"], list)
 
 
 def test_index_serves_html(tmp_db) -> None:
