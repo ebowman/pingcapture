@@ -402,7 +402,7 @@ async function refresh() {
     ]);
     renderStatus(status);
     renderSummary(summary);
-    renderChart(ts);
+    renderChart(ts, summary.outages || []);
     renderRecent(recent);
     renderOutages(summary);
     renderQualityEvents(summary);
@@ -624,12 +624,19 @@ function renderRecent(r) {
 }
 
 function datasetsFromPoints(points) {
+  // Each successful probe becomes a real data point; each failure becomes a
+  // null y-value at its real timestamp. Combined with spanGaps:false this
+  // makes the line break visibly at every failure rather than smoothing
+  // across it — so a 3-minute hard outage looks like a 3-minute gap in the
+  // line, not a continuous trace.
   const byTarget = new Map();
   for (const p of points) {
-    if (!p.success || p.latency_ms == null) continue;
     const k = `${p.label} (${p.kind})`;
     if (!byTarget.has(k)) byTarget.set(k, []);
-    byTarget.get(k).push({ x: new Date(p.ts), y: p.latency_ms });
+    byTarget.get(k).push({
+      x: new Date(p.ts),
+      y: (p.success && p.latency_ms != null) ? p.latency_ms : null,
+    });
   }
   return [...byTarget.entries()].map(([label, data], i) => ({
     label,
@@ -641,6 +648,7 @@ function datasetsFromPoints(points) {
     pointRadius: 0,
     pointHoverRadius: 3,
     tension: 0.2,
+    spanGaps: false,
   }));
 }
 
@@ -650,14 +658,17 @@ function datasetsFromSeries(series) {
   // requires the fill-target dataset to be at the right index relative to
   // ourselves, so we lay them out as: [p50_a, p95_a, p50_b, p95_b, ...] and
   // tell each p95 to fill to the previous dataset (its p50).
+  //
+  // Failed buckets (every probe failed → p50/p95 both null) are emitted as
+  // null y-values so spanGaps:false breaks the line over the failure window
+  // instead of smoothing across it.
   const byTarget = new Map();
   for (const b of series) {
-    if (b.p50_ms == null && b.p95_ms == null) continue;
     const k = `${b.label} (${b.kind})`;
     if (!byTarget.has(k)) byTarget.set(k, { p50: [], p95: [] });
     const ts = new Date(b.ts);
-    if (b.p50_ms != null) byTarget.get(k).p50.push({ x: ts, y: b.p50_ms });
-    if (b.p95_ms != null) byTarget.get(k).p95.push({ x: ts, y: b.p95_ms });
+    byTarget.get(k).p50.push({ x: ts, y: b.p50_ms });
+    byTarget.get(k).p95.push({ x: ts, y: b.p95_ms });
   }
   const out = [];
   let i = 0;
@@ -667,6 +678,7 @@ function datasetsFromSeries(series) {
       label, data: p50, parsing: false,
       borderColor: color, backgroundColor: color,
       borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 3, tension: 0.2,
+      spanGaps: false,
     });
     out.push({
       label: `${label} p95`, data: p95, parsing: false,
@@ -675,6 +687,7 @@ function datasetsFromSeries(series) {
       borderWidth: 0, pointRadius: 0,
       fill: "-1",  // fill down to the previous dataset (the p50 line)
       tension: 0.2,
+      spanGaps: false,
       // Hide from the legend so we don't double-count.
       legend: { display: false },
     });
@@ -682,7 +695,46 @@ function datasetsFromSeries(series) {
   return out;
 }
 
-function renderChart(ts) {
+// Outage band plugin. Reads chart.$outages = [{start, end}, ...] (ISO strings
+// or Date objects) and draws a translucent red vertical band for each one
+// that overlaps the visible x-range. Behind the data, in front of the grid.
+const outageBandsPlugin = {
+  id: "outage-bands",
+  beforeDatasetsDraw(chart) {
+    const outages = chart.$outages;
+    if (!outages || !outages.length) return;
+    const { ctx, chartArea, scales } = chart;
+    if (!chartArea) return;
+    const xMin = scales.x.min, xMax = scales.x.max;
+    ctx.save();
+    ctx.fillStyle = "rgba(248, 81, 73, 0.18)";
+    ctx.strokeStyle = "rgba(248, 81, 73, 0.55)";
+    ctx.lineWidth = 1;
+    for (const o of outages) {
+      const sMs = (o.start instanceof Date ? o.start : new Date(o.start)).getTime();
+      const eMs = (o.end   instanceof Date ? o.end   : new Date(o.end)).getTime();
+      // Skip outages entirely outside the visible window.
+      if (eMs < xMin || sMs > xMax) continue;
+      const x1 = scales.x.getPixelForValue(Math.max(sMs, xMin));
+      const x2 = scales.x.getPixelForValue(Math.min(eMs, xMax));
+      // Make sure even a sub-second outage stays visible at 30d zoom — minimum
+      // 1px wide so users can see something happened.
+      const w = Math.max(1, x2 - x1);
+      ctx.fillRect(x1, chartArea.top, w, chartArea.bottom - chartArea.top);
+      // Faint left/right edges so adjacent bands don't merge into one blob.
+      ctx.beginPath();
+      ctx.moveTo(x1 + 0.5, chartArea.top);
+      ctx.lineTo(x1 + 0.5, chartArea.bottom);
+      ctx.moveTo(x1 + w - 0.5, chartArea.top);
+      ctx.lineTo(x1 + w - 0.5, chartArea.bottom);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+};
+Chart.register(outageBandsPlugin);
+
+function renderChart(ts, outages) {
   let datasets;
   if (ts.bucket_s && ts.bucket_s > 0) {
     datasets = datasetsFromSeries(ts.series);
@@ -705,6 +757,7 @@ function renderChart(ts) {
     chart.data.datasets = datasets;
     chart.options.scales.x.min = xMin;
     chart.options.scales.x.max = xMax;
+    chart.$outages = outages || [];
     chart.update("none");
     return;
   }
@@ -732,10 +785,16 @@ function renderChart(ts) {
             filter: (item) => !item.text.endsWith(" p95"),
           },
         },
-        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(1)} ms` } },
+        tooltip: {
+          // Skip points with null y (failures) — Chart.js still hovers them
+          // because the x coordinate exists, but there's no value to show.
+          filter: (c) => c.parsed.y != null,
+          callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(1)} ms` },
+        },
       },
     },
   });
+  chart.$outages = outages || [];
 }
 
 document.querySelectorAll(".controls button[data-window]").forEach(btn => {

@@ -267,15 +267,25 @@ function syncActiveButtons() {
   });
 }
 
+// Shared outage list for the current refresh cycle. Stashed on every chart
+// instance so the outage-bands plugin can draw them. We fetch /api/summary
+// alongside /api/xmr so the bands are always coherent with the dashboard.
+let currentOutages = [];
+
 async function refresh() {
-  const url = `/api/xmr?hours=${currentHours}&bucket_s=${currentBucket}&kind=${currentKind}`;
-  let payload;
+  const xmrUrl = `/api/xmr?hours=${currentHours}&bucket_s=${currentBucket}&kind=${currentKind}`;
+  const sumUrl = `/api/summary?hours=${currentHours}`;
+  let payload, summary;
   try {
-    payload = await fetch(url).then(r => r.json());
+    [payload, summary] = await Promise.all([
+      fetch(xmrUrl).then(r => r.json()),
+      fetch(sumUrl).then(r => r.json()),
+    ]);
   } catch (e) {
     console.error(e);
     return;
   }
+  currentOutages = summary.outages || [];
   const root = document.getElementById("charts");
   if (!payload.charts.length) {
     // Wipe out any prior charts so the user sees the "no data" state cleanly.
@@ -413,6 +423,7 @@ function renderOneChart(root, c) {
     horizontalLine("LNPL", c.lnpl, "#f85149", [4, 4]),
   ];
   setXBounds(entry.ind, c.target, dataExtent);
+  entry.ind.$outages = currentOutages;
   entry.ind.update("none");
 
   // MR chart data
@@ -451,6 +462,7 @@ function renderOneChart(root, c) {
     horizontalLine("MR-bar", c.mr_bar, "#8b949e", [2, 4]),
   ];
   setXBounds(entry.mr, c.target, dataExtent);
+  entry.mr.$outages = currentOutages;
   entry.mr.update("none");
 
   // Signals summary list
@@ -490,6 +502,42 @@ function horizontalLine(label, y, color, dash) {
     order: 9,
   };
 }
+
+// Outage band plugin. Reads chart.$outages = [{start, end}, ...] (ISO strings
+// or Date objects) and draws a translucent red vertical band for each one
+// that overlaps the visible x-range. Behind the data lines so RTT stays
+// readable, in front of the grid lines.
+const outageBandsPlugin = {
+  id: "outage-bands",
+  beforeDatasetsDraw(chart) {
+    const outages = chart.$outages;
+    if (!outages || !outages.length) return;
+    const { ctx, chartArea, scales } = chart;
+    if (!chartArea) return;
+    const xMin = scales.x.min, xMax = scales.x.max;
+    ctx.save();
+    ctx.fillStyle = "rgba(248, 81, 73, 0.18)";
+    ctx.strokeStyle = "rgba(248, 81, 73, 0.55)";
+    ctx.lineWidth = 1;
+    for (const o of outages) {
+      const sMs = (o.start instanceof Date ? o.start : new Date(o.start)).getTime();
+      const eMs = (o.end   instanceof Date ? o.end   : new Date(o.end)).getTime();
+      if (eMs < xMin || sMs > xMax) continue;
+      const x1 = scales.x.getPixelForValue(Math.max(sMs, xMin));
+      const x2 = scales.x.getPixelForValue(Math.min(eMs, xMax));
+      const w = Math.max(1, x2 - x1);
+      ctx.fillRect(x1, chartArea.top, w, chartArea.bottom - chartArea.top);
+      ctx.beginPath();
+      ctx.moveTo(x1 + 0.5, chartArea.top);
+      ctx.lineTo(x1 + 0.5, chartArea.bottom);
+      ctx.moveTo(x1 + w - 0.5, chartArea.top);
+      ctx.lineTo(x1 + w - 0.5, chartArea.bottom);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+};
+Chart.register(outageBandsPlugin);
 
 const limitLinesPlugin = {
   id: "limit-lines",
