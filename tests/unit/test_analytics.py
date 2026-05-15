@@ -164,6 +164,67 @@ def test_video_uptime_single_rtt_outlier_is_good(now: datetime) -> None:
     assert video_call_uptime_pct(pings, []) == 100.0
 
 
+def test_video_uptime_single_huge_rtt_spike_is_good(now: datetime) -> None:
+    # pingcapture-9mm regression: today's dashboard showed three "quality
+    # events" for what were visibly single-probe spikes (700-1100ms) in
+    # otherwise clean minutes. ITU's latency budget assumes *sustained*
+    # latency during a call; jitter buffers absorb isolated outliers. The
+    # rule must not fire when one probe out of ~14 is over the budget while
+    # everything else is fine.
+    base = now
+    kinds = ("icmp", "tcp")
+    pings = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=1100.0 if i == 7 else 20.0)
+        for i in range(14)
+    ]
+    assert video_call_uptime_pct(pings, []) == 100.0
+
+
+def test_video_uptime_two_high_probes_still_good(now: datetime) -> None:
+    # Two slow probes in a clean minute is below the sustained threshold
+    # (need >=3) and the median is still fast. Stays GOOD.
+    base = now
+    kinds = ("icmp", "tcp")
+    pings = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=500.0 if i in (3, 9) else 20.0)
+        for i in range(14)
+    ]
+    assert video_call_uptime_pct(pings, []) == 100.0
+
+
+def test_video_uptime_three_high_probes_is_bad(now: datetime) -> None:
+    # Three probes individually over 300ms — that's the sustained-slow
+    # threshold. Counts as a quality event even though the median is fine.
+    # 12 probes spaced 5s apart all fit inside one minute (0-55s).
+    base = now
+    kinds = ("icmp", "tcp")
+    pings = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=500.0 if i in (3, 7, 11) else 20.0)
+        for i in range(12)
+    ]
+    assert video_call_uptime_pct(pings, []) == 0.0
+
+
+def test_video_uptime_high_median_is_bad(now: datetime) -> None:
+    # Median (p50) above 200ms means more than half the probes were slow —
+    # sustained degradation by definition. All 12 probes inside one minute.
+    base = now
+    kinds = ("icmp", "tcp")
+    pings = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=250.0 if i < 7 else 20.0)
+        for i in range(12)
+    ]
+    assert video_call_uptime_pct(pings, []) == 0.0
+
+
 def test_video_uptime_empty_input_is_100() -> None:
     assert video_call_uptime_pct([], []) == 100.0
 

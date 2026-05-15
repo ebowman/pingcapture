@@ -203,9 +203,21 @@ def uptime_pct(pings: Iterable[PingResult]) -> float:
 # probes over the open internet have naturally higher spread. The loss
 # check looks only at TCP probes — ICMP-only loss is upstream rate-limiting,
 # not user-visible (see detect_outages for the same rule).
+#
+# Latency check is *sustained-only*. A single high-RTT probe in an otherwise
+# clean minute doesn't reflect call-quality degradation — a real video call's
+# jitter buffer absorbs isolated spikes. So we require EITHER (a) the median
+# RTT itself to be elevated (more than half the probes were slow) OR (b) at
+# least VIDEO_CALL_MIN_SLOW_PROBES probes individually breached the budget.
+# Either condition is consistent with sustained network degradation; neither
+# fires on one outlier. The p95 threshold no longer drives the decision —
+# kept only as a reporting field on the QualityEvent so the rule's history
+# stays legible from the data. See pingcapture-9mm.
 VIDEO_CALL_WINDOW_S = 60
 VIDEO_CALL_MAX_LOSS_PCT = 1.0
-VIDEO_CALL_MAX_P95_RTT_MS = 300.0
+VIDEO_CALL_MAX_P95_RTT_MS = 300.0           # reporting-only, no longer triggers
+VIDEO_CALL_MAX_P50_RTT_MS = 200.0           # NEW: median (sustained) RTT cap
+VIDEO_CALL_MIN_SLOW_PROBES = 3              # NEW: probes > P95 cap to count as sustained
 VIDEO_CALL_MAX_JITTER_MS = 75.0
 
 
@@ -261,8 +273,20 @@ def _classify_minute(
         if p.success and p.latency_ms is not None
     )
     if latencies:
-        p95 = _pct(latencies, 95)
-        if p95 > VIDEO_CALL_MAX_P95_RTT_MS:
+        # Sustained-latency check. Either condition is enough on its own.
+        p50 = _pct(latencies, 50)
+        slow_count = sum(1 for v in latencies if v > VIDEO_CALL_MAX_P95_RTT_MS)
+        if p50 > VIDEO_CALL_MAX_P50_RTT_MS:
+            # Median elevated → more than half the probes were slow. That's
+            # sustained. Report the median itself as the worst metric so the
+            # number on the dashboard tells the right story.
+            return (QUALITY_REASON_LATENCY, p50, VIDEO_CALL_MAX_P50_RTT_MS)
+        if slow_count >= VIDEO_CALL_MIN_SLOW_PROBES:
+            # At least N probes individually exceeded the 300ms budget —
+            # consistent with sustained congestion across multiple samples,
+            # not a single jitter buffer-absorbed spike. Report p95 as the
+            # worst metric (still informative; it's what tripped the count).
+            p95 = _pct(latencies, 95)
             return (QUALITY_REASON_LATENCY, p95, VIDEO_CALL_MAX_P95_RTT_MS)
         if len(latencies) >= 4:
             iqr = _pct(latencies, 75) - _pct(latencies, 25)
