@@ -130,7 +130,7 @@ def test_flicker_when_mixed_loss_exceeds_one_percent() -> None:
 def test_icmp_only_loss_stays_green() -> None:
     """ICMP-only loss with 0 TCP failures is invisible to the user
     (upstream ICMP shaping), so the bucket stays SEVERITY_NONE.
-    Mirrors the behavior of detect_outages and video_call_uptime_pct."""
+    Mirrors the behavior of detect_outages and call_quality_pct."""
     start = datetime(2026, 4, 26, 0, 0, tzinfo=UTC)
     end = start + timedelta(hours=1)
     pings = []

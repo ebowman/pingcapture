@@ -214,39 +214,32 @@
 
   <section class="grid grid-4" style="margin-top:1rem;">
     <div class="card">
-      <h2>Uptime (last <span id="window-label">24h</span>)<details class="defn"><summary aria-label="How uptime is defined">?</summary><div class="defn-body">
-        Percentage of one-minute windows that would have sustained a
-        video call. A minute counts as <em>down</em> if it overlaps a
-        detected connectivity outage, TCP packet loss exceeds
-        <code>1%</code>, latency was sustained-high (median RTT >
-        <code>200&nbsp;ms</code>, or <code>3+</code> probes above
-        <code>300&nbsp;ms</code>), or jitter (IQR of RTT) exceeds
-        <code>75&nbsp;ms</code>. Thresholds follow ITU/Cisco
-        interactive-video guidance, with the latency check requiring
-        sustained slowness so a single jitter-buffer-absorbed spike
-        doesn't flag a minute.<br><br>
-        <em>Connectivity outages</em> are streaks of failing probes; <em>quality
-        events</em> are minutes that failed the latency / jitter / loss
-        thresholds without a connectivity outage. Together they
-        account for every minute the rule marks bad.<br><br>
-        The smaller <em>probes</em> number is the raw success ratio of every
-        ICMP/TCP probe — it includes single-probe drops that a user would
-        never notice.
+      <h2>Connectivity uptime (last <span id="window-label">24h</span>)<details class="defn"><summary aria-label="What is connectivity uptime?">?</summary><div class="defn-body">
+        Percentage of one-minute windows that did not overlap a
+        detected outage. Answers the question <em>was the line up?</em>
+        and equals <code>100&nbsp;%</code> by construction when no
+        outages were detected. Separate from <em>call quality</em>
+        because a high-latency minute is still a connected minute.
       </div></details></h2>
       <div class="row">
-        <div class="stat" id="uptime">—<span class="unit">%</span></div>
-        <div class="muted">probes <span id="probe-uptime">—</span></div>
+        <div class="stat" id="conn-uptime">—<span class="unit">%</span></div>
+        <div class="muted"><span id="conn-outages-summary">—</span></div>
       </div>
     </div>
     <div class="card">
-      <h2>Connectivity outages<details class="defn"><summary aria-label="What is a connectivity outage?">?</summary><div class="defn-body">
-        Streaks of failing probes that look like real loss: any TCP
-        failure, failures across <code>≥3</code> ICMP targets at once,
-        or a DNS resolution failure.
+      <h2>Call quality<details class="defn"><summary aria-label="What is call quality?">?</summary><div class="defn-body">
+        Percentage of one-minute windows that would have sustained a
+        clean video call. A minute counts as <em>bad</em> if it overlaps
+        a detected outage, TCP packet loss exceeds <code>1%</code>,
+        latency was sustained-high (median RTT &gt;
+        <code>200&nbsp;ms</code>, or <code>3+</code> probes above
+        <code>300&nbsp;ms</code>), or jitter (IQR of RTT) exceeds
+        <code>75&nbsp;ms</code>. Thresholds follow ITU/Cisco
+        interactive-video guidance, with sustained-slow latency required
+        so a single jitter-buffer-absorbed spike doesn't flag a minute.
       </div></details></h2>
       <div class="row">
-        <div class="stat" id="outage-count">—</div>
-        <div class="muted">total <span id="outage-total">—</span></div>
+        <div class="stat" id="call-quality">—<span class="unit">%</span></div>
       </div>
     </div>
     <div class="card">
@@ -259,6 +252,31 @@
       <div class="row">
         <div class="stat" id="quality-count">—</div>
         <div class="muted"><span id="quality-frac">—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Probe success rate<details class="defn"><summary aria-label="What is the probe success rate?">?</summary><div class="defn-body">
+        Raw fraction of ICMP/TCP probes that returned, including
+        single-probe drops a user would never notice. Diagnostic colour
+        more than user-facing impact — useful when triaging which
+        targets were affected.
+      </div></details></h2>
+      <div class="row">
+        <div class="stat" id="probe-uptime">—<span class="unit">%</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid grid-2" style="margin-top:1rem;">
+    <div class="card">
+      <h2>Connectivity outages<details class="defn"><summary aria-label="What is a connectivity outage?">?</summary><div class="defn-body">
+        Streaks of failing probes that look like real loss: any TCP
+        failure, failures across <code>≥3</code> ICMP targets at once,
+        or a DNS resolution failure.
+      </div></details></h2>
+      <div class="row">
+        <div class="stat" id="outage-count">—</div>
+        <div class="muted">total <span id="outage-total">—</span></div>
       </div>
     </div>
     <div class="card">
@@ -534,10 +552,18 @@ function renderStatus(s) {
 function renderSummary(s) {
   document.getElementById("window-label").textContent =
     currentWindow >= 24 ? (currentWindow / 24) + "d" : currentWindow + "h";
-  document.getElementById("uptime").innerHTML = s.video_call_uptime_pct.toFixed(1) +
-    '<span class="unit">%</span>';
-  document.getElementById("probe-uptime").textContent =
-    s.uptime_pct.toFixed(1) + "%";
+  // Headline row: two distinct metrics + diagnostic colour.
+  // Connectivity uptime — equals 100% iff outages.length == 0, by analytics
+  // invariant. That's the architectural fix; see pingcapture-qnx.
+  document.getElementById("conn-uptime").innerHTML =
+    s.connectivity_uptime_pct.toFixed(1) + '<span class="unit">%</span>';
+  const nOut = s.outages.length;
+  document.getElementById("conn-outages-summary").textContent =
+    `${nOut} ${nOut === 1 ? "outage" : "outages"}`;
+  document.getElementById("call-quality").innerHTML =
+    s.call_quality_pct.toFixed(1) + '<span class="unit">%</span>';
+  document.getElementById("probe-uptime").innerHTML =
+    s.uptime_pct.toFixed(1) + '<span class="unit">%</span>';
   document.getElementById("outage-count").textContent = s.outages.length;
   const total = s.outages.reduce((a, o) => a + o.duration_s, 0);
   document.getElementById("outage-total").textContent = fmtSec(total);

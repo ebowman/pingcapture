@@ -51,6 +51,12 @@ def test_summary_endpoint(tmp_db, now) -> None:
     # 'connectivity outages + quality events' picture consistent.
     assert "quality_events" in body
     assert isinstance(body["quality_events"], list)
+    # Both new metrics must be present (pingcapture-qnx split).
+    assert "connectivity_uptime_pct" in body
+    assert "call_quality_pct" in body
+    # Old bundled name must NOT come back — the dashboard contract is the
+    # two separate metrics.
+    assert "video_call_uptime_pct" not in body
 
 
 def test_index_serves_html(tmp_db) -> None:

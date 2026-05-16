@@ -13,6 +13,8 @@ from ..analytics import (
     bucket_outages,
     bucket_size_for_window,
     buffer_bloat_score,
+    call_quality_pct,
+    connectivity_uptime_pct,
     detect_outages,
     downsample_latency,
     floor_to_hour,
@@ -20,7 +22,6 @@ from ..analytics import (
     mtr_path_changes,
     quality_events,
     uptime_pct,
-    video_call_uptime_pct,
     window,
     xmr_charts,
 )
@@ -121,7 +122,8 @@ def create_app(cfg: Config) -> FastAPI:
             {
                 "window_hours": hours,
                 "uptime_pct": uptime_pct(pings),
-                "video_call_uptime_pct": video_call_uptime_pct(pings, outages),
+                "connectivity_uptime_pct": connectivity_uptime_pct(pings, outages),
+                "call_quality_pct": call_quality_pct(pings, outages),
                 "outages": [
                     {
                         "start": o.start.isoformat(),

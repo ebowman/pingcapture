@@ -73,7 +73,7 @@ def _streak_is_outage(failures: list[PingResult]) -> bool:
     Everything in the codebase that asks "is this an outage?" routes through
     detect_outages(), which routes through this predicate. Change the rule
     here and every consumer (web /api/summary, bucket_outages, hourly
-    materialized buckets in storage, video_call_uptime_pct, report.py) sees
+    materialized buckets in storage, call_quality_pct, report.py) sees
     the new behaviour automatically.
 
     A streak is an outage when ANY of these hold:
@@ -253,7 +253,7 @@ def _classify_minute(
     the video-call thresholds. Returns None for a good minute, or
     (reason, worst_metric, threshold) for a bad one.
 
-    Used by BOTH video_call_uptime_pct and quality_events so the two cannot
+    Used by BOTH call_quality_pct and quality_events so the two cannot
     drift. The outage-overlap check is the caller's responsibility — it
     needs the outage list, which this helper doesn't take.
 
@@ -299,7 +299,7 @@ def _bucket_pings_by_minute(
     pings: Iterable[PingResult],
 ) -> dict[datetime, list[PingResult]]:
     """Floor every probe to its containing minute. Single helper used by
-    both video_call_uptime_pct and quality_events."""
+    both call_quality_pct and quality_events."""
     buckets: dict[datetime, list[PingResult]] = {}
     for p in pings:
         key = p.ts.replace(second=0, microsecond=0)
@@ -319,26 +319,62 @@ def _minute_overlaps_outage(
     return False
 
 
-def video_call_uptime_pct(
+def connectivity_uptime_pct(
     pings: Iterable[PingResult],
     outages: Iterable[Outage],
 ) -> float:
-    """User-experience uptime: fraction of 60s windows that would have
-    sustained a video call.
+    """Connectivity uptime: fraction of 60s windows that did NOT overlap a
+    detected outage.
+
+    This is the metric that maps to the natural-English reading of
+    "uptime" — "was the line up?". By construction it equals 100.0 iff
+    the outage list is empty (modulo windows with no probes, which are
+    excluded from the denominator the same way the other metrics handle
+    capture gaps). That invariant is asserted by a unit test so the
+    "0 outages but uptime < 100%" complaint cannot recur.
+
+    Note this is INTENTIONALLY decoupled from call quality. A minute
+    with one 1100ms RTT spike is bad for a call but the line was up;
+    that minute counts as connectivity-up here, and shows up as a
+    quality event in ``quality_events()``. See pingcapture-qnx for
+    the architectural rationale.
+    """
+    window = timedelta(seconds=VIDEO_CALL_WINDOW_S)
+    buckets = _bucket_pings_by_minute(pings)
+    if not buckets:
+        return 100.0
+    outage_list = list(outages)
+    bad = sum(
+        1 for bucket_start in buckets
+        if _minute_overlaps_outage(bucket_start, outage_list, window)
+    )
+    return 100.0 * (len(buckets) - bad) / len(buckets)
+
+
+def call_quality_pct(
+    pings: Iterable[PingResult],
+    outages: Iterable[Outage],
+) -> float:
+    """Call quality: fraction of 60s windows that would have sustained a
+    clean video call.
 
     A window is BAD if any of:
       - it overlaps a detected outage,
       - TCP packet loss in the window exceeds VIDEO_CALL_MAX_LOSS_PCT
         (ICMP-only loss is ignored, matching the outage detector — it
         usually reflects upstream ICMP rate-limiting, not real loss),
-      - p95 RTT in the window exceeds VIDEO_CALL_MAX_P95_RTT_MS,
+      - latency is sustained-high (p50 > VIDEO_CALL_MAX_P50_RTT_MS or
+        ≥VIDEO_CALL_MIN_SLOW_PROBES probes exceed VIDEO_CALL_MAX_P95_RTT_MS),
       - inter-quartile RTT spread (p75-p25) exceeds VIDEO_CALL_MAX_JITTER_MS.
 
     The threshold checks route through ``_classify_minute`` so the rule is
     a single source of truth shared with ``quality_events``.
 
     Windows with no probes are excluded from the denominator — gaps in
-    capture don't count for or against uptime.
+    capture don't count for or against the metric.
+
+    Renamed from video_call_uptime_pct in pingcapture-qnx because the
+    name "uptime" invited misreading — see that issue for context.
     """
     window = timedelta(seconds=VIDEO_CALL_WINDOW_S)
     buckets = _bucket_pings_by_minute(pings)
@@ -608,7 +644,7 @@ def _severity_for(
     TCP is the authoritative signal — TCP failing means user-visible breakage.
     If TCP never failed and no outage was opened, ICMP-only loss is invisible
     to the user (upstream ICMP shaping) and the bucket stays SEVERITY_NONE,
-    matching how video_call_uptime_pct treats the same data.
+    matching how call_quality_pct treats the same data.
     """
     if samples == 0:
         return SEVERITY_NO_DATA
@@ -1045,6 +1081,8 @@ __all__ = [
     "bucket_outages",
     "bucket_size_for_window",
     "buffer_bloat_score",
+    "call_quality_pct",
+    "connectivity_uptime_pct",
     "detect_outages",
     "downsample_latency",
     "floor_to_hour",
@@ -1054,7 +1092,6 @@ __all__ = [
     "quality_events",
     "summarize_by_hour_of_day",
     "uptime_pct",
-    "video_call_uptime_pct",
     "window",
     "xmr_charts",
 ]

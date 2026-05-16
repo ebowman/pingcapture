@@ -14,9 +14,10 @@ This report is based on continuous network probes from the customer's local netw
 """
 
 summary_heading = "Executive summary"
-summary_uptime = "Uptime"
+summary_connectivity_uptime = "Connectivity uptime"
+summary_call_quality = "Call quality"
 summary_probe_success = "Probe success rate"
-summary_uptime_footnote = "Uptime is the share of one-minute windows that would have sustained a video call: no overlapping connectivity outage, TCP packet loss ≤ 1 %, sustained-low latency (median RTT ≤ 200 ms and fewer than three probes above 300 ms), and jitter (IQR of RTT) ≤ 75 ms (ITU/Cisco interactive-video guidance, with the latency check requiring sustained slowness so a single jitter-buffer-absorbed spike does not flag a minute). The probe success rate is the raw fraction of ICMP/TCP probes that returned, including single-probe drops a user would not notice."
+summary_uptime_footnote = "Connectivity uptime is the share of one-minute windows that did not overlap a detected outage — it answers the question 'was the line up?'. By construction it equals 100 % when no outages were detected. Call quality is the share of one-minute windows that would have sustained a clean video call: no overlapping outage, TCP packet loss ≤ 1 %, sustained-low latency (median RTT ≤ 200 ms and fewer than three probes above 300 ms), and jitter (IQR of RTT) ≤ 75 ms (ITU/Cisco interactive-video guidance, with the latency check requiring sustained slowness so a single jitter-buffer-absorbed spike does not flag a minute). The probe success rate is the raw fraction of ICMP/TCP probes that returned, including single-probe drops a user would not notice."
 summary_outage_count = "Connectivity outages detected"
 summary_total_outage = "Total time unreachable"
 summary_longest_outage = "Longest single outage"

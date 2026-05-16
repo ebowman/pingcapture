@@ -15,6 +15,8 @@ from .analytics import (
     QualityEvent,
     bucket_outages,
     buffer_bloat_score,
+    call_quality_pct,
+    connectivity_uptime_pct,
     detect_outages,
     floor_to_hour,
     latency_stats,
@@ -23,7 +25,6 @@ from .analytics import (
     quality_events,
     summarize_by_hour_of_day,
     uptime_pct,
-    video_call_uptime_pct,
 )
 from .config import Config
 from .i18n import Translator
@@ -151,7 +152,8 @@ def render_report(
         "duration_str": _format_duration(t, (inputs.end - inputs.start).total_seconds()),
         "generated_at_str": _fmt_ts(datetime.now(UTC)),
         "uptime_pct_value": uptime_pct(pings),
-        "video_call_uptime_pct_value": video_call_uptime_pct(pings, outages),
+        "connectivity_uptime_pct_value": connectivity_uptime_pct(pings, outages),
+        "call_quality_pct_value": call_quality_pct(pings, outages),
         "outages": [_outage_view(o, t) for o in outages],
         "total_outage_str": _format_duration(t, total_out),
         "longest_outage_str": _format_duration(t, longest),

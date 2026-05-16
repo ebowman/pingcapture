@@ -14,9 +14,10 @@ Dieser Bericht basiert auf kontinuierlichen Netzwerkmessungen aus dem lokalen Ne
 """
 
 summary_heading = "Zusammenfassung"
-summary_uptime = "Verfügbarkeit"
+summary_connectivity_uptime = "Verbindungsverfügbarkeit"
+summary_call_quality = "Gesprächsqualität"
 summary_probe_success = "Erfolgsrate der Messsonden"
-summary_uptime_footnote = "Verfügbarkeit ist der Anteil der Ein-Minuten-Fenster, in denen ein Videoanruf möglich gewesen wäre: kein überlappender Verbindungsausfall, TCP-Paketverlust ≤ 1 %, anhaltend niedrige Latenz (Median-Hin-und-Rückzeit ≤ 200 ms und weniger als drei Sonden über 300 ms) und Jitter (IQR der Hin-und-Rückzeit) ≤ 75 ms (gemäß ITU/Cisco-Empfehlungen für interaktive Videoanrufe; die Latenzprüfung erfordert anhaltende Verlangsamung, damit ein einzelner vom Jitter-Puffer absorbierter Spitzenwert keine Minute markiert). Die Erfolgsrate der Messsonden ist der reine Anteil zurückgekehrter ICMP/TCP-Sonden, einschließlich einzelner Aussetzer, die kein Anwender bemerken würde."
+summary_uptime_footnote = "Verbindungsverfügbarkeit ist der Anteil der Ein-Minuten-Fenster, die nicht von einem erkannten Ausfall überlappt wurden — sie beantwortet die Frage 'War die Leitung verfügbar?'. Sie beträgt konstruktionsbedingt 100 %, wenn keine Ausfälle erkannt wurden. Gesprächsqualität ist der Anteil der Ein-Minuten-Fenster, in denen ein sauberer Videoanruf möglich gewesen wäre: kein überlappender Ausfall, TCP-Paketverlust ≤ 1 %, anhaltend niedrige Latenz (Median-Hin-und-Rückzeit ≤ 200 ms und weniger als drei Sonden über 300 ms) und Jitter (IQR der Hin-und-Rückzeit) ≤ 75 ms (gemäß ITU/Cisco-Empfehlungen für interaktive Videoanrufe; die Latenzprüfung erfordert anhaltende Verlangsamung, damit ein einzelner vom Jitter-Puffer absorbierter Spitzenwert keine Minute markiert). Die Erfolgsrate der Messsonden ist der reine Anteil zurückgekehrter ICMP/TCP-Sonden, einschließlich einzelner Aussetzer, die kein Anwender bemerken würde."
 summary_outage_count = "Erkannte Verbindungsausfälle"
 summary_total_outage = "Gesamte Ausfallzeit"
 summary_longest_outage = "Längster einzelner Ausfall"

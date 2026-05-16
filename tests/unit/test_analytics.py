@@ -12,7 +12,7 @@ from pingcapture.analytics import (
     latency_stats,
     mtr_path_changes,
     uptime_pct,
-    video_call_uptime_pct,
+    call_quality_pct,
 )
 from pingcapture.storage import MtrHop, MtrRun
 
@@ -64,7 +64,7 @@ def _good_minute(now: datetime, *, minute: int) -> list:
 
 def test_video_uptime_all_clear(now: datetime) -> None:
     pings = _good_minute(now, minute=0) + _good_minute(now, minute=1)
-    assert video_call_uptime_pct(pings, []) == 100.0
+    assert call_quality_pct(pings, []) == 100.0
 
 
 def test_video_uptime_excludes_outage_window(now: datetime) -> None:
@@ -78,7 +78,7 @@ def test_video_uptime_excludes_outage_window(now: datetime) -> None:
         failed_probes=6,
         affected_targets=["1.1.1.1"],
     )
-    assert video_call_uptime_pct(pings, [outage]) == 50.0
+    assert call_quality_pct(pings, [outage]) == 50.0
 
 
 def test_video_uptime_high_loss_window_is_bad(now: datetime) -> None:
@@ -95,7 +95,7 @@ def test_video_uptime_high_loss_window_is_bad(now: datetime) -> None:
             ts=bad_base + timedelta(seconds=i * 5),
             success=success, kind=kind, latency_ms=20.0,
         ))
-    assert video_call_uptime_pct(good + bad, []) == 50.0
+    assert call_quality_pct(good + bad, []) == 50.0
 
 
 def test_video_uptime_icmp_only_loss_is_good(now: datetime) -> None:
@@ -113,7 +113,7 @@ def test_video_uptime_icmp_only_loss_is_good(now: datetime) -> None:
             ts=bad_base + timedelta(seconds=i * 5),
             success=success, kind=kind, latency_ms=20.0,
         ))
-    assert video_call_uptime_pct(good + bad, []) == 100.0
+    assert call_quality_pct(good + bad, []) == 100.0
 
 
 def test_video_uptime_high_p95_latency_is_bad(now: datetime) -> None:
@@ -129,7 +129,7 @@ def test_video_uptime_high_p95_latency_is_bad(now: datetime) -> None:
                 latency_ms=20.0 if i < 7 else 500.0)
         for i in range(12)
     ]
-    assert video_call_uptime_pct(good + bad, []) == 50.0
+    assert call_quality_pct(good + bad, []) == 50.0
 
 
 def test_video_uptime_high_jitter_is_bad(now: datetime) -> None:
@@ -145,7 +145,7 @@ def test_video_uptime_high_jitter_is_bad(now: datetime) -> None:
                 latency_ms=20.0 if i % 2 == 0 else 120.0)
         for i in range(12)
     ]
-    assert video_call_uptime_pct(good + bad, []) == 50.0
+    assert call_quality_pct(good + bad, []) == 50.0
 
 
 def test_video_uptime_single_rtt_outlier_is_good(now: datetime) -> None:
@@ -161,7 +161,7 @@ def test_video_uptime_single_rtt_outlier_is_good(now: datetime) -> None:
                 latency_ms=200.0 if i == 5 else 20.0)
         for i in range(12)
     ]
-    assert video_call_uptime_pct(pings, []) == 100.0
+    assert call_quality_pct(pings, []) == 100.0
 
 
 def test_video_uptime_single_huge_rtt_spike_is_good(now: datetime) -> None:
@@ -179,7 +179,7 @@ def test_video_uptime_single_huge_rtt_spike_is_good(now: datetime) -> None:
                 latency_ms=1100.0 if i == 7 else 20.0)
         for i in range(14)
     ]
-    assert video_call_uptime_pct(pings, []) == 100.0
+    assert call_quality_pct(pings, []) == 100.0
 
 
 def test_video_uptime_two_high_probes_still_good(now: datetime) -> None:
@@ -193,7 +193,7 @@ def test_video_uptime_two_high_probes_still_good(now: datetime) -> None:
                 latency_ms=500.0 if i in (3, 9) else 20.0)
         for i in range(14)
     ]
-    assert video_call_uptime_pct(pings, []) == 100.0
+    assert call_quality_pct(pings, []) == 100.0
 
 
 def test_video_uptime_three_high_probes_is_bad(now: datetime) -> None:
@@ -208,7 +208,7 @@ def test_video_uptime_three_high_probes_is_bad(now: datetime) -> None:
                 latency_ms=500.0 if i in (3, 7, 11) else 20.0)
         for i in range(12)
     ]
-    assert video_call_uptime_pct(pings, []) == 0.0
+    assert call_quality_pct(pings, []) == 0.0
 
 
 def test_video_uptime_high_median_is_bad(now: datetime) -> None:
@@ -222,17 +222,17 @@ def test_video_uptime_high_median_is_bad(now: datetime) -> None:
                 latency_ms=250.0 if i < 7 else 20.0)
         for i in range(12)
     ]
-    assert video_call_uptime_pct(pings, []) == 0.0
+    assert call_quality_pct(pings, []) == 0.0
 
 
 def test_video_uptime_empty_input_is_100() -> None:
-    assert video_call_uptime_pct([], []) == 100.0
+    assert call_quality_pct([], []) == 100.0
 
 
 def test_video_uptime_ignores_empty_minutes(now: datetime) -> None:
     # Capture has a gap (minute 5..10) — denominator should be 2, not 12.
     pings = _good_minute(now, minute=0) + _good_minute(now, minute=15)
-    assert video_call_uptime_pct(pings, []) == 100.0
+    assert call_quality_pct(pings, []) == 100.0
 
 
 def test_outage_threshold_not_met(now: datetime) -> None:
@@ -685,7 +685,7 @@ def test_quality_events_good_minute_produces_nothing(now: datetime) -> None:
 
 
 def test_quality_and_uptime_agree(now: datetime) -> None:
-    """The whole point of refactoring _classify_minute: video_call_uptime_pct
+    """The whole point of refactoring _classify_minute: call_quality_pct
     and quality_events must produce a consistent picture. If uptime < 100%
     and no outages were detected, the gap must equal len(quality_events) / N
     where N is the total minute count."""
@@ -698,7 +698,7 @@ def test_quality_and_uptime_agree(now: datetime) -> None:
         pings.append(mk_ping(ts=base + timedelta(minutes=1, seconds=i),
                              kind="icmp", latency_ms=400.0))
     events = quality_events(pings, [])
-    uptime = video_call_uptime_pct(pings, [])
+    uptime = call_quality_pct(pings, [])
     assert len(events) == 1
     # 1 good out of 2 minutes -> 50%.
     assert uptime == 50.0
@@ -717,3 +717,75 @@ def test_quality_event_reason_priority_loss_over_latency(now: datetime) -> None:
     events = quality_events(pings, [])
     assert len(events) == 1
     assert events[0].reason == QUALITY_REASON_LOSS
+
+
+# ---------------------------------------------------------------------------
+# Connectivity uptime invariant — the architectural guard rail.
+#
+# This is the test that prevents the recurring "0 outages but uptime < 100%"
+# bug class from coming back. connectivity_uptime_pct is the metric that
+# answers the natural-English question "was the line up?", and its contract
+# is: it equals 100.0 iff the outage list is empty (over windows that have
+# any probes). Anything that fuses connectivity with quality into this
+# metric will fail this test. See pingcapture-qnx for the architectural
+# rationale and the history of whack-a-mole fixes this guards against.
+# ---------------------------------------------------------------------------
+
+from pingcapture.analytics import Outage, connectivity_uptime_pct
+
+
+def test_connectivity_uptime_invariant_no_outages_is_100(now: datetime) -> None:
+    """No outages → connectivity uptime is exactly 100%, regardless of how
+    bad latency / jitter / loss got within those minutes. This is the
+    architectural contract: connectivity is about whether the line was up,
+    not whether a call would have been clean."""
+    # A minute with a 1100ms latency spike that would fail every call-quality
+    # threshold. As long as no outage was opened, connectivity is 100%.
+    base = now
+    kinds = ("icmp", "tcp")
+    pings = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2],
+                latency_ms=1100.0 if i == 5 else 20.0)
+        for i in range(12)
+    ]
+    assert connectivity_uptime_pct(pings, []) == 100.0
+
+
+def test_connectivity_uptime_invariant_outage_drops_below_100(now: datetime) -> None:
+    """An outage that overlaps any captured minute must drop connectivity
+    uptime below 100%. The contrapositive of the invariant."""
+    # Two minutes of clean probes; one minute is overlapped by an outage.
+    pings = _good_minute(now, minute=0) + _good_minute(now, minute=1)
+    outage = Outage(
+        start=now + timedelta(minutes=1, seconds=10),
+        end=now + timedelta(minutes=1, seconds=40),
+        duration_s=30.0, failed_probes=6,
+        affected_targets=["1.1.1.1"],
+    )
+    assert connectivity_uptime_pct(pings, [outage]) == 50.0
+
+
+def test_connectivity_uptime_decoupled_from_call_quality(now: datetime) -> None:
+    """Same pings, same window: connectivity_uptime_pct == 100% AND
+    call_quality_pct < 100% can coexist. That's the whole point of the
+    split — the two metrics answer different questions. Without this
+    decoupling, the dashboard cannot honestly show '0 outages, < 100%
+    uptime' without looking self-contradictory."""
+    # Two minutes: one clean, one with sustained 250ms median latency
+    # (median > 200ms threshold → quality event, no outage opened).
+    good = _good_minute(now, minute=0)
+    base = now + timedelta(minutes=1)
+    kinds = ("icmp", "tcp")
+    bad = [
+        mk_ping(ts=base + timedelta(seconds=i * 5),
+                success=True, kind=kinds[i % 2], latency_ms=250.0)
+        for i in range(12)
+    ]
+    pings = good + bad
+    assert connectivity_uptime_pct(pings, []) == 100.0
+    assert call_quality_pct(pings, []) == 50.0
+
+
+def test_connectivity_uptime_empty_input_is_100() -> None:
+    assert connectivity_uptime_pct([], []) == 100.0
