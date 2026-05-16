@@ -301,7 +301,7 @@
       <h2>Connectivity outages</h2>
       <table id="outage-table">
         <thead><tr>
-          <th>Start (UTC)</th><th class="num">Duration</th><th class="num">Probes</th><th>Targets</th>
+          <th>Start</th><th class="num">Duration</th><th class="num">Probes</th><th>Targets</th>
         </tr></thead>
         <tbody><tr><td colspan="4" class="muted">No connectivity outages in window.</td></tr></tbody>
       </table>
@@ -312,7 +312,7 @@
     <h2>Quality events</h2>
     <table id="quality-table">
       <thead><tr>
-        <th>Start (UTC)</th><th>Reason</th><th class="num">Worst metric</th><th class="num">Threshold</th><th>Targets</th>
+        <th>Start</th><th>Reason</th><th class="num">Worst metric</th><th class="num">Threshold</th><th>Targets</th>
       </tr></thead>
       <tbody><tr><td colspan="5" class="muted">No quality events in window.</td></tr></tbody>
     </table>
@@ -322,7 +322,7 @@
     <h2>Recent events (last 50)</h2>
     <table id="events-table">
       <thead><tr>
-        <th>Time (UTC)</th><th>Kind</th><th>Target</th><th class="num">Latency</th><th>Result</th>
+        <th>Time</th><th>Kind</th><th>Target</th><th class="num">Latency</th><th>Result</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -332,7 +332,7 @@
     <h2>Path changes (mtr)</h2>
     <table id="paths-table">
       <thead><tr>
-        <th>Detected at (UTC)</th><th>Target</th><th class="num">Hop</th><th>Change</th>
+        <th>Detected at</th><th>Target</th><th class="num">Hop</th><th>Change</th>
       </tr></thead>
       <tbody><tr><td colspan="4" class="muted">No path changes in window.</td></tr></tbody>
     </table>
@@ -341,7 +341,7 @@
 
 <div id="grid-tip" class="grid-tip" role="tooltip" aria-hidden="true"></div>
 
-<footer>auto-refresh every 10s &middot; <span id="version"></span></footer>
+<footer>auto-refresh every 10s &middot; times in <span id="local-tz">local time</span> &middot; <span id="version"></span></footer>
 
 <script>
 const fmtSec = (s) => {
@@ -352,7 +352,21 @@ const fmtSec = (s) => {
   return (s / 86400).toFixed(1) + " d";
 };
 const fmtMs = (v) => v == null ? "—" : v.toFixed(1);
-const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, "") : "—";
+
+// All dashboard timestamps render in the browser's local time zone so the
+// table times line up with the chart's local-time x-axis. The /report URL
+// is unchanged (still UTC) because that's the document sent to providers.
+// Format is YYYY-MM-DD HH:MM:SS in the user's locale conventions — kept
+// sortable/grep-able by avoiding locale-specific reorderings.
+function fmtTs(s) {
+  if (!s) return "—";
+  const d = s instanceof Date ? s : new Date(s);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+// Detected once, so we can surface it in the footer.
+const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
 
 // Settings are persisted in the URL so refresh/share preserves them.
 // w = latency-chart window in hours; d = outage-grid range in days;
@@ -412,6 +426,7 @@ async function refresh() {
     renderPaths(summary);
     renderGrid(buckets);
     document.getElementById("version").textContent = "pingcapture v" + status.version;
+    document.getElementById("local-tz").textContent = LOCAL_TZ;
   } catch (e) {
     console.error(e);
   }

@@ -191,7 +191,15 @@
 
 <script>
 const fmtMs = (v) => v == null ? "—" : v.toFixed(1) + " ms";
-const fmtTs = (s) => s ? s.replace("T", " ").replace(/\.\d+/, "").replace(/\+00:00$/, " UTC") : "—";
+// Render in browser-local time so the XmR tooltips line up with the chart
+// x-axis and with the dashboard tables. Report URLs still use UTC.
+function fmtTs(s) {
+  if (!s) return "—";
+  const d = s instanceof Date ? s : new Date(s);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
 const ALLOWED_HOURS = new Set([1, 6, 12, 24, 168, 720]);
 const ALLOWED_BUCKETS = new Set([30, 60, 300, 900]);
@@ -637,7 +645,7 @@ function makeIndividualsConfig(target) {
             label: (c) => ["acute", "shift", "trend"].includes(c.dataset.label)
               ? `${c.dataset.label} · ${c.parsed.y.toFixed(1)} ms`
               : `${c.parsed.y.toFixed(1)} ms`,
-            title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
+            title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x)) : "",
           },
         },
         zoom: {
@@ -675,7 +683,7 @@ function makeMrConfig(target) {
         tooltip: {
           callbacks: {
             label: (c) => `MR · ${c.parsed.y.toFixed(1)} ms`,
-            title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x).toISOString()) : "",
+            title: (items) => items.length ? fmtTs(new Date(items[0].parsed.x)) : "",
           },
         },
         zoom: {
