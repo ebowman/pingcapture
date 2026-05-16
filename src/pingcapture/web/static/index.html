@@ -462,6 +462,7 @@ function fmtHourLocal(iso) {
   const d = new Date(iso);
   return d.toLocaleString(undefined, {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    hour12: false,
   });
 }
 
@@ -794,6 +795,12 @@ function renderChart(ts, outages) {
       scales: {
         x: { type: "time", grid: { color: "#222831" },
              ticks: { color: "#8b949e" },
+             // Force 24-hour clock everywhere. date-fns tokens; only override
+             // the units that actually appear (Chart.js auto-picks the unit).
+             time: { displayFormats: {
+               second: "HH:mm:ss", minute: "HH:mm", hour: "HH:mm",
+               day: "MMM d", week: "MMM d", month: "MMM yyyy",
+             } },
              min: xMin, max: xMax },
         y: { beginAtZero: true, grid: { color: "#222831" },
              ticks: { color: "#8b949e", callback: v => v + " ms" } },

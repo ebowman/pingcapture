@@ -316,7 +316,7 @@ async function refresh() {
     renderOneChart(root, c);
   }
   document.getElementById("updated").textContent =
-    `${currentKind.toUpperCase()} · ${payload.charts.length} target${payload.charts.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString()}`;
+    `${currentKind.toUpperCase()} · ${payload.charts.length} target${payload.charts.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString(undefined, { hour12: false })}`;
 }
 
 function renderOneChart(root, c) {
@@ -634,7 +634,11 @@ function makeIndividualsConfig(target) {
       animation: false,
       interaction: { mode: "nearest", intersect: false },
       scales: {
-        x: { type: "time", grid: { color: "#222831" }, ticks: { color: "#8b949e" } },
+        x: { type: "time", grid: { color: "#222831" }, ticks: { color: "#8b949e" },
+             time: { displayFormats: {
+               second: "HH:mm:ss", minute: "HH:mm", hour: "HH:mm",
+               day: "MMM d", week: "MMM d", month: "MMM yyyy",
+             } } },
         y: { beginAtZero: true, grid: { color: "#222831" },
              ticks: { color: "#8b949e", callback: v => v + " ms" } },
       },
@@ -674,7 +678,11 @@ function makeMrConfig(target) {
       animation: false,
       interaction: { mode: "nearest", intersect: false },
       scales: {
-        x: { type: "time", grid: { color: "#222831" }, ticks: { color: "#8b949e" } },
+        x: { type: "time", grid: { color: "#222831" }, ticks: { color: "#8b949e" },
+             time: { displayFormats: {
+               second: "HH:mm:ss", minute: "HH:mm", hour: "HH:mm",
+               day: "MMM d", week: "MMM d", month: "MMM yyyy",
+             } } },
         y: { beginAtZero: true, grid: { color: "#222831" },
              ticks: { color: "#8b949e", callback: v => v + " ms" } },
       },
