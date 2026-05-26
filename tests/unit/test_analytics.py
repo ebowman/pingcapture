@@ -339,6 +339,31 @@ def test_icmp_failures_across_three_targets_is_an_outage(now: datetime) -> None:
     assert sorted(outages[0].affected_targets) == ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
 
 
+def test_icmp_multi_target_failure_with_tcp_success_is_flicker(now: datetime) -> None:
+    """pingcapture-0nt regression. An upstream device rate-limited ICMP echo
+    so all four anycast targets returned 'no reply' for hours, while TCP/443
+    kept completing in ~15 ms. Without a TCP cross-check, rule (b) (>=3 distinct
+    ICMP targets) turned every ~20 s rate-limit burst into a phantom outage —
+    ~60 an hour — even though the user-visible path never went down.
+
+    A TCP probe SUCCEEDING anywhere in the streak window is positive proof the
+    line is up, so the multi-target ICMP heuristic must stand down: this is
+    flicker, not an outage. Contrast test_icmp_failures_across_three_targets_
+    is_an_outage, where no TCP probe lands in the window and the streak counts."""
+    pings = [
+        mk_ping(ts=now, kind="icmp", target="1.1.1.1"),  # success
+        mk_ping(ts=now + timedelta(seconds=5), kind="icmp", target="9.9.9.9",
+                success=False, error="no reply"),
+        mk_ping(ts=now + timedelta(seconds=10), kind="icmp", target="8.8.8.8",
+                success=False, error="no reply"),
+        mk_ping(ts=now + timedelta(seconds=15), kind="icmp", target="cloudflare.com",
+                success=False, error="no reply"),
+        mk_ping(ts=now + timedelta(seconds=20), kind="tcp", target="8.8.8.8",
+                latency_ms=15.0),  # the path is demonstrably up
+    ]
+    assert detect_outages(pings) == []
+
+
 def test_icmp_failures_across_two_targets_is_flicker(now: datetime) -> None:
     """Two distinct ICMP targets failing while TCP succeeds is below the
     multi-target threshold — still demotes to flicker."""

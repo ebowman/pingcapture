@@ -67,7 +67,11 @@ def _is_dns_failure(p: PingResult) -> bool:
     return any(fp in err for fp in _DNS_ERROR_FINGERPRINTS)
 
 
-def _streak_is_outage(failures: list[PingResult]) -> bool:
+def _streak_is_outage(
+    failures: list[PingResult],
+    *,
+    tcp_succeeded_in_window: bool = False,
+) -> bool:
     """The single decision point: does this failure streak count as an outage?
 
     Everything in the codebase that asks "is this an outage?" routes through
@@ -81,9 +85,17 @@ def _streak_is_outage(failures: list[PingResult]) -> bool:
           the user-visible path so a TCP failure is by definition a real
           connectivity event;
       (b) it contains failures across at least
-          OUTAGE_MIN_DISTINCT_ICMP_TARGETS distinct ICMP targets — three or
-          more independent anycast destinations failing together is
-          essentially impossible to explain except as upstream loss;
+          OUTAGE_MIN_DISTINCT_ICMP_TARGETS distinct ICMP targets AND no TCP
+          probe succeeded inside the streak window. Three or more independent
+          anycast destinations going quiet together looks like upstream loss
+          — but only if we have no positive proof the path is up. A TCP/443
+          handshake completing in the same window *is* that proof: it means
+          the user-visible path was carrying traffic while ICMP echo was
+          merely being rate-limited or deprioritised. ``tcp_succeeded_in_window``
+          carries that proof in (see pingcapture-0nt: an upstream ICMP-shaping
+          burst dropped all four anycast pings for ~2h while TCP stayed
+          ~99% up, and rule (b) without this guard turned it into a flood of
+          ~60 phantom outages an hour);
       (c) it contains a DNS resolution failure — DNS uses a different
           transport and a different upstream path from ICMP echo, so a
           NameLookupError during a failure streak corroborates a real outage.
@@ -95,6 +107,8 @@ def _streak_is_outage(failures: list[PingResult]) -> bool:
         return True
     if any(_is_dns_failure(p) for p in failures):
         return True
+    if tcp_succeeded_in_window:
+        return False
     icmp_targets = {p.target for p in failures if p.kind == "icmp"}
     if len(icmp_targets) >= OUTAGE_MIN_DISTINCT_ICMP_TARGETS:
         return True
@@ -128,12 +142,19 @@ def detect_outages(
     outage_start: datetime | None = None
     outage_failures: list[PingResult] = []
     last_ts: datetime | None = None
+    # Whether a TCP probe SUCCEEDED inside the current streak window. TCP is
+    # the user-visible path, so a successful handshake during a wall of ICMP
+    # failures is positive proof the line is up — it vetoes the multi-target
+    # ICMP heuristic in _streak_is_outage (rule b). The successful probe that
+    # ends the streak counts: it lands at the trailing edge of the window.
+    # See pingcapture-0nt.
+    tcp_ok_in_streak = False
 
-    def _close_outage(end_ts: datetime) -> None:
+    def _close_outage(end_ts: datetime, *, tcp_ok: bool) -> None:
         nonlocal in_outage, outage_start, outage_failures
         if outage_start is None:
             return
-        if not _streak_is_outage(outage_failures):
+        if not _streak_is_outage(outage_failures, tcp_succeeded_in_window=tcp_ok):
             in_outage = False
             outage_start = None
             outage_failures = []
@@ -156,14 +177,19 @@ def detect_outages(
         # Treat a long quiet gap as an end-of-outage / reset.
         if last_ts is not None and (p.ts - last_ts).total_seconds() > gap_tolerance_s:
             if in_outage:
-                _close_outage(last_ts)
+                _close_outage(last_ts, tcp_ok=tcp_ok_in_streak)
             streak_failures = []
+            tcp_ok_in_streak = False
         last_ts = p.ts
 
         if p.success:
+            if p.kind == "tcp":
+                # Proof the path is up at the trailing edge of the streak.
+                tcp_ok_in_streak = True
             if in_outage:
-                _close_outage(p.ts)
+                _close_outage(p.ts, tcp_ok=tcp_ok_in_streak)
             streak_failures = []
+            tcp_ok_in_streak = False
             continue
 
         streak_failures.append(p)
@@ -175,7 +201,7 @@ def detect_outages(
             outage_failures.append(p)
 
     if in_outage and last_ts is not None:
-        _close_outage(last_ts)
+        _close_outage(last_ts, tcp_ok=tcp_ok_in_streak)
 
     return outages
 
