@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -208,3 +209,38 @@ def test_xmr_endpoint_rejects_zero_bucket(tmp_db) -> None:
     client = TestClient(create_app(cfg))
     r = client.get("/api/xmr?bucket_s=0")
     assert r.status_code == 400
+
+
+# --- Offline guarantee ---------------------------------------------------
+# The dashboards must work when the internet is down (that's the whole point
+# of this tool). The pages must not pull JS from any external CDN, and every
+# local /vendor/ script they reference must actually be served.
+_SCRIPT_SRC = re.compile(r'<script[^>]*\bsrc=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _client(tmp_db) -> TestClient:
+    cfg = Config.defaults()
+    cfg = type(cfg)(**{**cfg.__dict__, "db_path": tmp_db})
+    return TestClient(create_app(cfg))
+
+
+def test_dashboards_have_no_external_script_sources(tmp_db) -> None:
+    client = _client(tmp_db)
+    for page in ("/", "/xmr"):
+        body = client.get(page).text
+        for src in _SCRIPT_SRC.findall(body):
+            assert not src.startswith(("http://", "https://", "//")), (
+                f"{page} loads an external script ({src}); it would break offline"
+            )
+
+
+def test_dashboard_vendor_scripts_are_served(tmp_db) -> None:
+    client = _client(tmp_db)
+    for page in ("/", "/xmr"):
+        body = client.get(page).text
+        srcs = _SCRIPT_SRC.findall(body)
+        assert srcs, f"{page} has no <script src> tags"
+        for src in srcs:
+            r = client.get(src)
+            assert r.status_code == 200, f"{page} references {src} which 404s"
+            assert "javascript" in r.headers.get("content-type", "")

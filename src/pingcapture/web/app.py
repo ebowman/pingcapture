@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..analytics import (
@@ -30,8 +31,10 @@ from ..i18n import supported_languages
 from ..report import ReportInputs, WindowOption, parse_since, render_report
 from ..storage import Store
 
-STATIC_INDEX = Path(__file__).parent / "static" / "index.html"
-STATIC_XMR = Path(__file__).parent / "static" / "xmr.html"
+STATIC_DIR = Path(__file__).parent / "static"
+STATIC_INDEX = STATIC_DIR / "index.html"
+STATIC_XMR = STATIC_DIR / "xmr.html"
+VENDOR_DIR = STATIC_DIR / "vendor"
 
 
 def _now() -> datetime:
@@ -40,6 +43,13 @@ def _now() -> datetime:
 
 def create_app(cfg: Config) -> FastAPI:
     app = FastAPI(title="pingcapture", version=__version__)
+
+    # Serve bundled JS libraries (Chart.js et al.) locally so the dashboards
+    # keep working when the internet is down — which is exactly when this tool
+    # is most useful. These files are vendored under static/vendor/.
+    app.mount(
+        "/vendor", StaticFiles(directory=VENDOR_DIR), name="vendor"
+    )
 
     def _store() -> Store:
         # Open per-request — SQLite handles concurrent reads well in WAL mode.
